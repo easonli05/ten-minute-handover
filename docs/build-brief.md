@@ -28,6 +28,17 @@ Three design constraints that everything follows from:
    were shaky on, current syllabus unit, and open student notes. Everything else
    is one tap deeper.
 
+**Timezone:** not specified in the original brief, and load-bearing enough that
+it isn't safe to leave implicit. Eason teaches in Taiwan; the deploy target
+(Vercel) defaults to UTC. Every "today" in this app — meeting-day sorting,
+status labels, the log sheet's default date — is Asia/Taipei's calendar date,
+computed explicitly (`Intl.DateTimeFormat(..., { timeZone: "Asia/Taipei" })`
+in `src/lib/date.ts`), never the executing runtime's local timezone. During
+Taipei's own early morning (00:00–08:00 Taipei = 16:00–24:00 UTC the
+*previous* UTC day) a naive implementation disagrees with Taipei about what
+day it is — every day, not an edge case; see `docs/decisions.md`'s 2026-09-22
+corrective-pass entry for the bug this was written to fix.
+
 ---
 
 ## 1. Stack and scaffold (first prompt)
@@ -207,6 +218,17 @@ Harden it for daily use:
   nextOpener; toggling a unit done advances the current-unit marker correctly.
 - A README with the env vars, the Turso/Neon setup commands, and the deploy step.
 ```
+
+**Partially done ahead of schedule** (2026-09-22 corrective pass, see
+`docs/decisions.md`): the seed script exists (`scripts/seed.ts` /
+`npm run db:seed`), and a `vitest` suite exists covering same-day-edit
+(`src/db/session-upsert.test.ts`) and the Taipei-timezone logic
+(`src/lib/date.test.ts`, `src/lib/log-sheet-form.test.ts`) — the two bugs
+that corrective pass fixed. "Today card shows the most recent session's
+nextOpener" and "toggling a unit done advances the current-unit marker" were
+verified manually this pass (and in section 2's) but have no automated test
+yet. Optimistic UI, `/api/export`/import, and write-failure handling are
+still not started.
 
 ---
 

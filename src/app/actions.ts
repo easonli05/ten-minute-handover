@@ -1,10 +1,41 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { notes, sessions, units } from "@/db/schema";
 import { assertAuthenticated } from "@/lib/auth-server";
+
+export type ExistingSessionFields = {
+  covered: string;
+  stuck: string;
+  nextOpener: string;
+} | null;
+
+// Lets the log sheet load whatever is already on file for a given class+date
+// — called on open (for today) and whenever the date field changes — so
+// re-saving never silently blanks fields the teacher didn't mean to touch.
+export async function getSessionForDateAction(
+  classId: string,
+  date: string,
+): Promise<ExistingSessionFields> {
+  await assertAuthenticated();
+
+  const rows = await db
+    .select()
+    .from(sessions)
+    .where(and(eq(sessions.classId, classId), eq(sessions.date, date)))
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) return null;
+
+  return {
+    covered: row.covered ?? "",
+    stuck: row.stuck ?? "",
+    nextOpener: row.nextOpener ?? "",
+  };
+}
 
 export type LogSessionState = {
   error: string | null;

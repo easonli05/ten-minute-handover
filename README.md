@@ -7,8 +7,11 @@ ten-minute breaks between them.
 last thing you write after a class — *"open next class with…"* — is the plan
 waiting for you when you walk back in.
 
-Status: **section 1 of the build brief done** — Next.js scaffold, schema, and
-passcode auth are in place; no UI yet (see [Build](#build) below).
+Status: **sections 1 and 2 of the build brief done** — scaffold, schema,
+passcode auth, and the Today screen + log sheet are built and working (see
+[Build](#build) below). **No live deployment exists yet** — see
+[Deploy](#deploy-vercel). Sections 3–5 (mid-class notes, class detail /
+weekly review, hardening) are not started.
 
 ---
 
@@ -52,8 +55,9 @@ The real app is specified in the build brief and starts from scratch either way.
 
 ## Build
 
-`docs/build-brief.md` section 1 (stack + schema + auth) is done. Sections 2–5
-(the actual screens) are not started.
+`docs/build-brief.md` sections 1 (stack + schema + auth) and 2 (Today screen +
+log sheet) are done. Section 3 (mid-class "catch a note" bottom bar) is next.
+Sections 4–5 (class detail, weekly review, hardening) are not started.
 
 ### Stack
 
@@ -64,8 +68,34 @@ The real app is specified in the build brief and starts from scratch either way.
   `middleware.ts`) checks an httpOnly cookie against `APP_PASSCODE`, set for 90
   days by `/api/login`
 - PWA manifest (`src/app/manifest.ts`) + a shell-caching service worker
-  (`public/sw.js`) so it installs to an iPhone home screen; data fetches stay
-  network-only
+  (`public/sw.js`) so it installs to an iPhone home screen. The service worker
+  only ever caches the static shell (icons, manifest, an offline fallback
+  page) — every page that can show class data is fetched from the network on
+  every visit and never cached, so it can't go stale. Offline shows an
+  explicit "no connection" page (`public/offline.html`), not a stale copy.
+- All teaching dates (today, meeting-day sorting, status labels, the log
+  sheet's default date) are computed in **Asia/Taipei**, explicitly, via
+  `Intl.DateTimeFormat(..., { timeZone: "Asia/Taipei" })` in `src/lib/date.ts`
+  — not the runtime's local timezone. A UTC server (Vercel's default) and a
+  Taiwan phone must agree on what day it is before 08:00 Taipei time (00:00
+  UTC), and neither is guaranteed to be running in Taipei's own timezone.
+
+### Getting started on a fresh install
+
+There is no class-creation UI yet (that's out of scope for sections 1–2, and
+the brief deliberately keeps the app to exactly what's on the pre-class
+card — see `AGENTS.md`'s "no attendance, grades, or materials storage" rule).
+After `npm run db:push`, run:
+
+```bash
+npm run db:seed
+```
+
+This inserts one clearly-labelled example class ("Example class — edit or
+delete me") with a 3-unit syllabus, so the Today screen isn't empty. Edit or
+add real classes directly in the database for now (`npm run db:studio` opens
+Drizzle's browser-based table editor) — a proper class-creation screen is
+section-4-or-later work per the brief.
 
 ### Env vars
 
@@ -91,7 +121,31 @@ npm run dev           # http://localhost:3000, will redirect to /login
 `npm run db:generate` writes a SQL migration to `drizzle/` instead of pushing
 directly, if you'd rather review it first.
 
+### Testing
+
+```bash
+npm test
+```
+
+Runs [Vitest](https://vitest.dev). Pure-logic tests (`src/lib/*.test.ts`) run
+always. The database integration test (`src/db/session-upsert.test.ts`) needs
+a real Postgres to talk to — it's skipped automatically when `DATABASE_URL`
+isn't set, and runs when it is:
+
+```bash
+DATABASE_URL=postgres://postgres:<password>@localhost:5432/<db> npm test
+```
+
+It uses a plain `pg` connection (works against local Postgres, CI Postgres,
+or Neon's own connection string), creates and deletes its own throwaway class
+row, and never touches your real data.
+
 ### Deploy (Vercel)
+
+**No live deployment exists yet.** Nobody has run these steps against a real
+Vercel/Neon account in this environment — building, linting, and testing have
+all been verified locally (see `docs/decisions.md`), but "it builds" is not
+"it's deployed." Steps to actually deploy:
 
 1. Push this repo to GitHub and import it in Vercel.
 2. Add the [Neon integration](https://vercel.com/integrations/neon) from the
@@ -99,5 +153,5 @@ directly, if you'd rather review it first.
    automatically — or set `DATABASE_URL` manually under Project Settings →
    Environment Variables.
 3. Set `APP_PASSCODE` under the same Environment Variables screen.
-4. Deploy. Run `npm run db:push` locally (pointed at the same `DATABASE_URL`)
-   once to create the tables.
+4. Deploy. Run `npm run db:push` and `npm run db:seed` locally (pointed at the
+   same `DATABASE_URL`) once, to create the tables and the example class.

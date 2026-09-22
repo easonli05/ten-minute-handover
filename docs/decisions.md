@@ -165,3 +165,169 @@ app. Trusting that the code compiles was not enough to believe those three
 things actually hold.
 **Affects:** Confidence only — no shipped file. Verification scripts lived in
 an untracked `scripts/` dir and were deleted after use, never staged.
+
+## 2026-09-22 — Claude Code — Corrective pass: Codex source review of commit 45e8978
+
+**Decided:** Codex reviewed commit 45e8978 (source-inspection only, did not run
+the app) and found three real bugs, all confirmed by reading the code before
+fixing:
+
+1. **Same-day edit could erase fields.** `LogSheet` opened with blank
+   textareas regardless of whether today was already logged, and
+   `logSessionAction`'s `onConflictDoUpdate` overwrites all three fields with
+   whatever was submitted. Reopening today's log and touching only the
+   opener would null out `covered`/`stuck`. Fixed by loading the existing
+   session into the form: on open, if today is already logged, prefill from
+   `latestSession` (already in hand from the Today-screen query, no extra
+   round trip); on a date change, fetch that date's session via a new
+   `getSessionForDateAction` and prefill from it, or blank the fields if
+   none exists. The overwrite-on-save semantics were **not** changed — once
+   the form shows the truth, submitting it back is correct by construction,
+   and a user who deliberately clears prefilled text still gets that clear
+   saved (a field never silently reverts to an old value the UI didn't
+   show). The "which values should the form open with" decision is a pure,
+   tested function (`src/lib/log-sheet-form.ts`) so it doesn't depend on
+   React rendering to verify.
+2. **Service worker could show stale class data.** `sw.js` cached every GET
+   outside `/api`, including the server-rendered `/` (and `/login`) pages,
+   cache-first with background refresh — so a reopened app could show
+   yesterday's "open with" while the real update sat in the cache, unseen,
+   until the *next* reload. Fixed: navigations (`request.mode ===
+   "navigate"`) are now always network-only, since every page that can show
+   class data is one of them; only genuinely static assets (Next's
+   content-hashed build output, icons, manifest) stay cache-first. Offline
+   now shows an explicit `public/offline.html` instead of either a network
+   error or (the bug) a silently stale page. Bumped the cache name to
+   `tmh-shell-v2` so the `activate` handler's cleanup (which deletes every
+   cache except the current name) purges the old version's cached data
+   pages on upgrade, rather than leaving them orphaned in a cache nothing
+   references anymore but the browser hasn't evicted.
+3. **"Today" used the runtime's local timezone.** `src/lib/date.ts` called
+   `new Date().toLocaleDateString("en-CA")` / `.getDay()` with no explicit
+   timezone — correct only if server and phone happen to share one. Eason
+   teaches in Taiwan; Vercel's default runtime is UTC. During Taipei's own
+   early morning — 00:00–08:00 Taipei, which is 16:00–24:00 UTC the
+   *previous* UTC day, not a rare late-night edge case but every single
+   day — a UTC server's `getTodayData()` and a Taipei phone's date-input
+   default could disagree about the date, corrupting meeting-day sorting
+   ("does this class meet today") and the log sheet's default date
+   alongside it. Fixed by
+   anchoring every date computation to `timeZone: "Asia/Taipei"` explicitly
+   via `Intl.DateTimeFormat`, and rewrote the day-difference math
+   (`formatTaught`/`isCold`) to parse "YYYY-MM-DD" parts and compare with
+   `Date.UTC` directly rather than letting `new Date(string)` apply
+   whatever timezone the calling runtime happens to have. This makes the
+   day-math itself timezone-independent, not just timezone-correct on the
+   server: it now gives the same answer wherever it runs.
+
+**Why:** Confirmed each finding against the actual code (not just the
+report) before touching anything, per usual practice — all three held up.
+Fix 1's root cause is that the form never knew what was already saved; fixing
+that (not the overwrite semantics) is the smaller, more correct change.
+Fix 2's root cause is treating a server-rendered data page like a static
+asset; the two need opposite caching strategies, and conflating them is what
+"cache the shell" always meant to avoid. Fix 3's root cause is assuming the
+process's default timezone is meaningful for a specific teacher in a specific
+place; it never was, on server or client.
+**Affects:** `src/lib/date.ts`, `src/lib/log-sheet-form.ts` (new),
+`src/app/actions.ts` (new `getSessionForDateAction`), `src/components/LogSheet.tsx`,
+`public/sw.js`, `public/offline.html` (new).
+
+## 2026-09-22 — Claude Code — Corrective pass: test infrastructure added
+
+**Decided:** Added `vitest` (+ `drizzle-orm/node-postgres`'s `pg` driver as a
+second, test-and-tooling-only DB client — `src/db/pg-client.ts`) as real,
+committed devDependencies, not the transient `--no-save` installs used for
+manual verification in the section-2 pass. Bumped `@types/node` from `^20` to
+`^22` because vitest 5 requires it and the runtime here is already Node 22 —
+the old pin was stricter than the actual environment, not a deliberate
+constraint.
+**Why:** The task explicitly asked for regression tests for these fixes, and
+section 5 of the brief already calls out automated tests as necessary before
+this app is trustworthy for daily use — pulling the infrastructure forward
+serves both. `pg` specifically (rather than trying to test against the app's
+own `neon-http` client) is necessary because `neon-http` only speaks to a
+real Neon endpoint over HTTP; it cannot reach a local or CI Postgres, so
+there was no way to write a DB-backed test against the shipped client. `pg`
+already had to exist conceptually since `drizzle-kit push`/`generate` use the
+Postgres wire protocol regardless of what the app runtime uses — this just
+makes that dependency explicit and reusable for tests and the seed script
+instead of leaving it implicit in drizzle-kit's own dependency tree.
+**Affects:** `package.json`, `vitest.config.mts`, `src/db/pg-client.ts`,
+`src/lib/date.test.ts`, `src/lib/log-sheet-form.test.ts`,
+`src/db/session-upsert.test.ts`.
+
+## 2026-09-22 — Claude Code — Seed script pulled forward from section 5
+
+**Decided:** Added `npm run db:seed` (`scripts/seed.ts`) now, inserting one
+fixed-id, clearly-labelled example class with a 3-unit syllabus — idempotent,
+safe to run more than once.
+**Why:** The corrective-review asked how a fresh install can be used at all
+without a class-creation UI, "without expanding into unrelated features."
+Building that UI now would be exactly that expansion (it's section-4-or-later
+work — see the pre-class-view-only rule in `AGENTS.md`). The brief's own
+section 5 already specifies this exact seed script for this exact reason
+("a fresh deploy is not an empty screen"); pulling forward one already-speced
+line item is not new scope, it's the smallest thing that answers the
+question honestly. Manual class creation for now is documented in the README
+as going through `npm run db:studio` or direct SQL.
+**Affects:** `scripts/seed.ts`, `package.json`, README's "Getting started on
+a fresh install" section.
+
+## 2026-09-22 — Claude Code — No live deployment exists
+
+**Decided:** README now says explicitly that no live Vercel/Neon deployment
+exists, rather than implying one might. Section 1 of the brief asked for "a
+working deploy," which this agent has never had the account access in this
+environment to actually do — only `npm run build` against a well-formed but
+fake `DATABASE_URL` has been verified, which proves the build succeeds, not
+that a deployment exists.
+**Why:** The corrective review asked to reconcile the brief's request for a
+working deployment against what's actually true. Leaving the README's
+phrasing loose ("hosted and work offline-tolerantly" per the brief, without
+stating plainly that it isn't hosted yet) would let a later reader assume
+more than what happened.
+**Affects:** README's status line and "Deploy (Vercel)" section.
+
+## 2026-09-22 — Claude Code — Second bug found during live verification: offline.html was itself behind auth
+
+**Decided:** While verifying fix 2 (the service worker rewrite) in a real
+browser, found that `/offline.html` was not excluded from `src/proxy.ts`'s
+auth matcher. The service worker's `install` step fetches `/offline.html` to
+precache it; that fetch is same-origin so it carries cookies, but on a
+genuinely fresh profile (or any request without a valid passcode cookie) the
+proxy redirected it to `/login?from=%2Foffline.html` — and `fetch()`'s
+default `redirect: "follow"` behavior meant the *redirected* response (the
+login page) got stored in the cache under the `/offline.html` key. The
+symptom would have been exactly the kind of bug this corrective pass exists
+to fix: going offline would show a stale snapshot of the login page instead
+of the intended "no connection" message. Fixed two ways: (1) added
+`offline.html` to the proxy matcher's exclusion list, alongside the other
+always-public shell files; (2) rewrote the service worker's install step to
+fetch with `redirect: "manual"` and throw if any shell URL comes back as a
+redirect or non-200, so a future regression of this kind fails the SW
+install loudly instead of silently caching the wrong content.
+**Why:** This surfaced only because the corrective-pass instructions asked
+for the offline path to be verified in a real browser rather than reasoned
+about from the code — reading `proxy.ts` and `sw.js` separately, each looked
+correct; the bug was in their interaction. Worth recording explicitly since
+it's exactly the class of bug ("looks right in isolation, wrong in
+combination") that a source-only review can't catch.
+**Affects:** `src/proxy.ts`, `public/sw.js`.
+
+## 2026-09-22 — Claude Code — Playwright note: testing SW-intercepted navigation offline
+
+**Decided:** `context.setOffline(true)` did not reliably trigger the service
+worker's offline fallback for a top-level navigation in headless Chromium
+here — the navigation failed before the SW's fetch handler ran, in a way
+that doesn't reflect how a real device's airplane mode behaves with an
+active SW. What worked: `context.route(url, route => route.abort(...))`,
+but only when matched by URL alone — once the SW's `respondWith()`
+intercepts the navigation, the request Playwright can still see and abort is
+the *SW's own internal* `fetch(request)` call, which reports
+`isNavigationRequest() === false` even though it's fetching the navigated
+URL. Matching on `isNavigationRequest()` (the seemingly-obvious approach)
+silently never fires.
+**Why:** Purely a testing-tool note, not an app decision — logged so a later
+agent verifying offline behavior doesn't lose the same time rediscovering it.
+**Affects:** Nothing shipped; verification method only.

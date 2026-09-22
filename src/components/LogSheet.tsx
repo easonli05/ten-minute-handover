@@ -1,9 +1,10 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
-import { logSessionAction, type LogSessionState } from "@/app/actions";
+import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import { getSessionForDateAction, logSessionAction, type LogSessionState } from "@/app/actions";
 import type { TodayClass } from "@/db/queries";
 import { todayISO } from "@/lib/date";
+import { deriveInitialFormValues, fieldsFromExistingSession } from "@/lib/log-sheet-form";
 
 const STUCK_CHIPS = [
   "pronunciation",
@@ -23,18 +24,51 @@ export function LogSheet({
   data: TodayClass;
   onClose: () => void;
 }) {
-  const { class: cls, latestSession, unit } = data;
+  const { class: cls, latestSession, loggedToday, unit } = data;
   const [state, formAction, pending] = useActionState(
     logSessionAction,
     initialState,
   );
-  const [stuck, setStuck] = useState("");
+
+  const [date, setDate] = useState(() => todayISO());
+  const initialFields = useState(() =>
+    deriveInitialFormValues({ loggedToday, latestSession }),
+  )[0];
+  const [covered, setCovered] = useState(initialFields.covered);
+  const [stuck, setStuck] = useState(initialFields.stuck);
+  const [nextOpener, setNextOpener] = useState(initialFields.nextOpener);
   const [watchWho, setWatchWho] = useState("");
+  const [isLoadingDate, startDateTransition] = useTransition();
   const stuckRef = useRef<HTMLTextAreaElement>(null);
+  // Ignore a date-lookup response if a newer one has since been requested.
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     if (state.success) onClose();
   }, [state.success, onClose]);
+
+  function handleDateChange(newDate: string) {
+    setDate(newDate);
+
+    // The date the drawer opened with already has its data in hand — no
+    // round trip needed, and it avoids a flash-to-blank while it resolves.
+    if (newDate === todayISO() && loggedToday && latestSession) {
+      setCovered(latestSession.covered ?? "");
+      setStuck(latestSession.stuck ?? "");
+      setNextOpener(latestSession.nextOpener ?? "");
+      return;
+    }
+
+    const requestId = ++requestIdRef.current;
+    startDateTransition(async () => {
+      const existing = await getSessionForDateAction(cls.id, newDate);
+      if (requestIdRef.current !== requestId) return; // a newer change won the race
+      const fields = fieldsFromExistingSession(existing);
+      setCovered(fields.covered);
+      setStuck(fields.stuck);
+      setNextOpener(fields.nextOpener);
+    });
+  }
 
   function insertStuckChip(chip: string) {
     setStuck((current) => (current ? `${current}, ${chip}` : chip));
@@ -77,10 +111,17 @@ export function LogSheet({
               <input
                 type="date"
                 name="date"
-                defaultValue={todayISO()}
+                value={date}
+                onChange={(e) => handleDateChange(e.target.value)}
+                disabled={isLoadingDate}
                 required
-                className="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm disabled:opacity-60"
               />
+              {isLoadingDate ? (
+                <span className="mt-1 block text-xs text-muted">
+                  Loading that date…
+                </span>
+              ) : null}
             </label>
 
             <label className="block">
@@ -88,6 +129,8 @@ export function LogSheet({
               <textarea
                 name="covered"
                 rows={2}
+                value={covered}
+                onChange={(e) => setCovered(e.target.value)}
                 placeholder="What really happened — not what you planned"
                 className="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm"
               />
@@ -125,6 +168,8 @@ export function LogSheet({
               <textarea
                 name="nextOpener"
                 rows={2}
+                value={nextOpener}
+                onChange={(e) => setNextOpener(e.target.value)}
                 placeholder="One concrete first ten minutes"
                 className="mt-1 w-full rounded-lg border-2 border-accent bg-transparent px-3 py-2 text-sm"
               />
