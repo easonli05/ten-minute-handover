@@ -89,3 +89,25 @@ account flow to script here, and Drizzle's Postgres support is its most mature
 driver. Turso is equally valid but needs its own CLI/auth step this environment
 cannot complete non-interactively.
 **Affects:** `package.json` deps, `src/db/`, `drizzle.config.ts`, env vars.
+
+## 2026-09-22 — Claude Code — PWA icons are a placeholder
+**Decided:** `app/manifest.ts` points its icon at the default Next.js
+`favicon.ico` instead of a designed app icon.
+**Why:** Section 2 of the brief picks "a palette with a single strong accent,"
+which hasn't happened yet — designing an icon now would mean redoing it once
+that palette exists. The manifest, service worker, and `appleWebApp` metadata
+are otherwise complete and installable; only the icon art is a stand-in.
+**Affects:** `src/app/manifest.ts`. Revisit when section 2's palette is chosen.
+
+## 2026-09-22 — Claude Code — Next.js 15+ breaking changes account for
+**Decided:** Used `next dev`'s bundled docs (`node_modules/next/dist/docs/`)
+before writing auth/PWA code, since this scaffold is Next.js 16.3.5 and prior
+training data assumes older conventions. Two changes that mattered: (1)
+`middleware.ts` is deprecated in favor of `src/proxy.ts` (same behavior,
+renamed export) — used for the passcode check; (2) `cookies()` and a page's
+`searchParams` are both async now — used `await` accordingly in
+`api/login/route.ts` and `login/page.tsx`.
+**Why:** Writing against stale API shape would silently produce code that
+either fails to run (old middleware filename is ignored) or throws at runtime
+(sync access to now-async APIs).
+**Affects:** `src/proxy.ts`, `src/app/api/login/route.ts`, `src/app/login/page.tsx`.

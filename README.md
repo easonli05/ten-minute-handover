@@ -7,8 +7,8 @@ ten-minute breaks between them.
 last thing you write after a class — *"open next class with…"* — is the plan
 waiting for you when you walk back in.
 
-Status: **spec written, not yet built.** A working prototype exists (see below)
-to validate the interaction before the real build starts.
+Status: **section 1 of the build brief done** — Next.js scaffold, schema, and
+passcode auth are in place; no UI yet (see [Build](#build) below).
 
 ---
 
@@ -42,14 +42,57 @@ each other stay consistent.
 
 ## The prototype
 
-`prototype/teaching-loop.html` is a complete, self-contained version of the
-interaction — open it in a browser and it works, storing data in `localStorage`.
-It exists to answer one question before the real build: **which fields actually
-get filled in during a real ten-minute break, and which get skipped?**
+`docs/decisions.md` describes `prototype/teaching-loop.html` as a frozen,
+self-contained reference for the interaction (`localStorage`-backed, no build
+step). That file was never checked into this repo — its absence is logged as a
+gap in `docs/decisions.md`, not silently fixed. If you have the original, add it
+without modifying it; do not write a new one from scratch (see `AGENTS.md`).
 
-It is a reference, not a foundation. The real app is specified in the build brief
-and starts from scratch.
+The real app is specified in the build brief and starts from scratch either way.
 
 ## Build
 
-Not started. `docs/build-brief.md` section 1 is the first step.
+`docs/build-brief.md` section 1 (stack + schema + auth) is done. Sections 2–5
+(the actual screens) are not started.
+
+### Stack
+
+- Next.js 16 (App Router) + TypeScript + Tailwind v4
+- Postgres on [Neon](https://neon.tech) via `drizzle-orm/neon-http` — see
+  `docs/decisions.md` for why Neon over Turso
+- Single-passcode auth: `src/proxy.ts` (Next.js 16's replacement for
+  `middleware.ts`) checks an httpOnly cookie against `APP_PASSCODE`, set for 90
+  days by `/api/login`
+- PWA manifest (`src/app/manifest.ts`) + a shell-caching service worker
+  (`public/sw.js`) so it installs to an iPhone home screen; data fetches stay
+  network-only
+
+### Env vars
+
+Copy `.env.example` to `.env.local` and fill in:
+
+- `DATABASE_URL` — a Neon Postgres connection string
+- `APP_PASSCODE` — any long random string; this is the one passcode that
+  unlocks the app
+
+### Local setup
+
+```bash
+npm install
+npm run db:push      # push the schema in src/db/schema.ts to your database
+npm run dev           # http://localhost:3000, will redirect to /login
+```
+
+`npm run db:generate` writes a SQL migration to `drizzle/` instead of pushing
+directly, if you'd rather review it first.
+
+### Deploy (Vercel)
+
+1. Push this repo to GitHub and import it in Vercel.
+2. Add the [Neon integration](https://vercel.com/integrations/neon) from the
+   Vercel dashboard — it provisions a database and injects `DATABASE_URL`
+   automatically — or set `DATABASE_URL` manually under Project Settings →
+   Environment Variables.
+3. Set `APP_PASSCODE` under the same Environment Variables screen.
+4. Deploy. Run `npm run db:push` locally (pointed at the same `DATABASE_URL`)
+   once to create the tables.
