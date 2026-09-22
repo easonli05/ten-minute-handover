@@ -142,8 +142,9 @@ persistent bottom-bar "catch a note" flow section 3 specifies.
 **Why:** Section 2 lists the button but the fast, reachable-from-anywhere
 capture path is explicitly section 3's job. Building a real version now would
 either duplicate work once section 3 lands or make section 3 redundant.
-**Affects:** `src/components/NoteSheet.tsx`. Expect this component to be
-superseded (or reused) when section 3 builds the bottom bar.
+**Affects:** `src/components/NoteSheet.tsx`. Resolved 2026-09-22 (section 3):
+reused as-is — the bottom bar's "Catch a note" opens this same component
+once it has resolved which class, rather than a second implementation.
 
 ## 2026-09-22 — Claude Code — How section 2 was verified
 **Decided:** Before committing, started a local Postgres 16 (already present
@@ -331,3 +332,27 @@ silently never fires.
 **Why:** Purely a testing-tool note, not an app decision — logged so a later
 agent verifying offline behavior doesn't lose the same time rediscovering it.
 **Affects:** Nothing shipped; verification method only.
+
+## 2026-09-22 — Claude Code — Section 3: how the bottom bar picks "which class"
+
+**Decided:** The brief only spells out class-resolution for "Catch a note"
+("class, pre-filled if only one is plausible"). Applied the same rule to
+"Log a class" for consistency, via one shared pure function
+(`pickObviousClass` in `src/lib/class-picker.ts`): if there is exactly one
+non-archived class, use it; else if exactly one class meets today, use it;
+else it's ambiguous. On ambiguous, a minimal `ClassPickerSheet` (one tap:
+the class name) appears before the note/log sheet, rather than guessing.
+Kept the per-card "Log this class"/"Note" buttons from section 2 as-is —
+they remain the direct, unambiguous path when you're already looking at a
+specific card; the bottom bar is the reachable-from-anywhere path section 3
+asks for. Both open the same `LogSheet`/`NoteSheet` components.
+**Why:** "Pre-filled if only one is plausible" implies a heuristic exists,
+but the brief never defines it precisely or says what happens otherwise.
+Guessing wrong would be worse than one extra tap — a note attributed to the
+wrong class is data corruption, not an inconvenience. "Meets today" (not,
+say, "most recently taught" or "next by start time") was chosen because
+`startTime` is explicitly free text in the schema, not a real time type, so
+there's no reliable way to rank multiple same-day classes by proximity to
+now; "meets today" is the one signal the schema actually supports.
+**Affects:** `src/lib/class-picker.ts` (new), `src/components/BottomBar.tsx`
+(new), `src/components/ClassPickerSheet.tsx` (new), `src/components/TodayScreen.tsx`.

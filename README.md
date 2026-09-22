@@ -7,10 +7,10 @@ ten-minute breaks between them.
 last thing you write after a class — *"open next class with…"* — is the plan
 waiting for you when you walk back in.
 
-Status: **sections 1 and 2 of the build brief done** — scaffold, schema,
-passcode auth, and the Today screen + log sheet are built and working (see
-[Build](#build) below). **No live deployment exists yet** — see
-[Deploy](#deploy-vercel). Sections 3–5 (mid-class notes, class detail /
+Status: **sections 1–3 of the build brief done** — scaffold, schema, passcode
+auth, the Today screen + log sheet, and the persistent "catch a note" bottom
+bar are built and working (see [Build](#build) below). **No live deployment
+exists yet** — see [Deploy](#deploy-vercel). Sections 4–5 (class detail /
 weekly review, hardening) are not started.
 
 ---
@@ -55,9 +55,10 @@ The real app is specified in the build brief and starts from scratch either way.
 
 ## Build
 
-`docs/build-brief.md` sections 1 (stack + schema + auth) and 2 (Today screen +
-log sheet) are done. Section 3 (mid-class "catch a note" bottom bar) is next.
-Sections 4–5 (class detail, weekly review, hardening) are not started.
+`docs/build-brief.md` sections 1–3 are done: stack + schema + auth, the Today
+screen + log sheet, and the persistent bottom bar for catching a note or
+logging a class from anywhere (not just from a specific card). Sections 4–5
+(class detail, weekly review, hardening) are not started.
 
 ### Stack
 
@@ -82,7 +83,7 @@ Sections 4–5 (class detail, weekly review, hardening) are not started.
 
 ### Getting started on a fresh install
 
-There is no class-creation UI yet (that's out of scope for sections 1–2, and
+There is no class-creation UI yet (that's out of scope through section 3, and
 the brief deliberately keeps the app to exactly what's on the pre-class
 card — see `AGENTS.md`'s "no attendance, grades, or materials storage" rule).
 After `npm run db:push`, run:
