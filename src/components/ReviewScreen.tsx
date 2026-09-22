@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useTransition } from "react";
-import { toggleNoteAction } from "@/app/actions";
 import type { ReviewData } from "@/db/queries";
 import { formatTaught } from "@/lib/date";
+import { NoteChecklist } from "./NoteChecklist";
 
 export function ReviewScreen({ data }: { data: ReviewData }) {
   const { pacing, openNotesByClass, recurringStuck } = data;
-  const [, startTransition] = useTransition();
 
   return (
     <main className="mx-auto max-w-lg space-y-6 p-4 pb-10">
@@ -69,26 +67,9 @@ export function ReviewScreen({ data }: { data: ReviewData }) {
             openNotesByClass.map(({ class: cls, notes }) => (
               <div key={cls.id} className="rounded-2xl border border-surface-border bg-surface p-4 shadow-sm">
                 <p className="font-medium">{cls.name}</p>
-                <ul className="mt-2 space-y-1.5">
-                  {notes.map((note) => (
-                    <li key={note.id} className="flex items-start gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
-                        onChange={() =>
-                          startTransition(() => {
-                            toggleNoteAction(note.id, true);
-                          })
-                        }
-                        aria-label={`Mark done: ${note.text}`}
-                      />
-                      <span>
-                        {note.who ? <span className="font-medium">{note.who}: </span> : null}
-                        {note.text}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                <div className="mt-2">
+                  <NoteChecklist notes={notes} />
+                </div>
               </div>
             ))
           )}

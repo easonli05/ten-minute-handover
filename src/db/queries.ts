@@ -1,45 +1,10 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "./index";
 import { classes, notes, sessions, units } from "./schema";
-import { todayAbbreviation, todayISO } from "@/lib/date";
 import { countRecurringStuck } from "@/lib/recurring-stuck";
+import { toTodayClass, type TodayClass } from "@/lib/today-class";
 
-export type TodayClass = {
-  class: typeof classes.$inferSelect;
-  latestSession: typeof sessions.$inferSelect | null;
-  loggedToday: boolean;
-  meetsToday: boolean;
-  unit: {
-    current: typeof units.$inferSelect | null;
-    doneCount: number;
-    total: number;
-  };
-  openNotes: (typeof notes.$inferSelect)[];
-};
-
-function toTodayClass(
-  cls: typeof classes.$inferSelect,
-  classSessions: (typeof sessions.$inferSelect)[],
-  classUnits: (typeof units.$inferSelect)[],
-  openNoteRows: (typeof notes.$inferSelect)[],
-): TodayClass {
-  const today = todayAbbreviation();
-  const todayDate = todayISO();
-  const latestSession = classSessions[0] ?? null;
-
-  return {
-    class: cls,
-    latestSession,
-    loggedToday: latestSession?.date === todayDate,
-    meetsToday: cls.days.includes(today),
-    unit: {
-      current: classUnits.find((u) => !u.done) ?? null,
-      doneCount: classUnits.filter((u) => u.done).length,
-      total: classUnits.length,
-    },
-    openNotes: openNoteRows,
-  };
-}
+export type { TodayClass };
 
 async function loadClassParts(classId: string) {
   const [classSessions, classUnits, openNoteRows] = await Promise.all([

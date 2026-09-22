@@ -1,10 +1,14 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useEffect, useState, useTransition, type FormEvent } from "react";
 import { addNoteAction, type AddNoteState } from "@/app/actions";
 import type { TodayClass } from "@/db/queries";
 
 const initialState: AddNoteState = { error: null, success: false };
+const NETWORK_ERROR: AddNoteState = {
+  error: "Couldn't reach the server — check your connection and try again. What you typed is still here.",
+  success: false,
+};
 
 export function NoteSheet({
   data,
@@ -14,20 +18,32 @@ export function NoteSheet({
   onClose: () => void;
 }) {
   const { class: cls } = data;
-  const [state, formAction, pending] = useActionState(
-    addNoteAction,
-    initialState,
-  );
+  const [state, setState] = useState<AddNoteState>(initialState);
+  const [pending, startSubmit] = useTransition();
   const [who, setWho] = useState("");
 
   useEffect(() => {
     if (state.success) onClose();
   }, [state.success, onClose]);
 
+  // See LogSheet's handleSubmit for why this isn't <form action={addNoteAction}>.
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    startSubmit(async () => {
+      try {
+        setState(await addNoteAction(state, formData));
+      } catch (err) {
+        console.error(err);
+        setState(NETWORK_ERROR);
+      }
+    });
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
       <div className="w-full max-w-md rounded-t-2xl bg-surface sm:rounded-2xl">
-        <form action={formAction} className="flex flex-col">
+        <form onSubmit={handleSubmit} className="flex flex-col">
           <input type="hidden" name="classId" value={cls.id} />
 
           <div className="flex items-start justify-between gap-3 border-b border-surface-border p-5">

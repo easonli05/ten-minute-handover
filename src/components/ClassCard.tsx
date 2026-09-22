@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useTransition } from "react";
-import { toggleNoteAction } from "@/app/actions";
 import type { TodayClass } from "@/db/queries";
 import { formatTaught, isCold } from "@/lib/date";
+import { NoteChecklist } from "./NoteChecklist";
 
 export function ClassCard({
   data,
@@ -17,7 +16,6 @@ export function ClassCard({
 }) {
   const { class: cls, latestSession, loggedToday, meetsToday, unit, openNotes } =
     data;
-  const [, startTransition] = useTransition();
 
   const pill = loggedToday
     ? { label: "Logged", tone: "accent" as const }
@@ -96,26 +94,9 @@ export function ClassCard({
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">
             Watch for
           </p>
-          <ul className="mt-1 space-y-1.5">
-            {openNotes.map((note) => (
-              <li key={note.id} className="flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
-                  onChange={() =>
-                    startTransition(() => {
-                      toggleNoteAction(note.id, true);
-                    })
-                  }
-                  aria-label={`Mark done: ${note.text}`}
-                />
-                <span>
-                  {note.who ? <span className="font-medium">{note.who}: </span> : null}
-                  {note.text}
-                </span>
-              </li>
-            ))}
-          </ul>
+          <div className="mt-1">
+            <NoteChecklist notes={openNotes} />
+          </div>
         </div>
       ) : null}
 

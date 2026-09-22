@@ -7,12 +7,12 @@ ten-minute breaks between them.
 last thing you write after a class — *"open next class with…"* — is the plan
 waiting for you when you walk back in.
 
-Status: **sections 1–4 of the build brief done** — scaffold, schema, passcode
-auth, the Today screen + log sheet, the persistent "catch a note" bottom bar,
-class detail (`/class/[id]`), and the weekly review (`/review`) are built and
+Status: **all five sections of the build brief are done** — scaffold, schema,
+passcode auth, the Today screen + log sheet, the persistent "catch a note"
+bottom bar, class detail (`/class/[id]`), the weekly review (`/review`),
+optimistic UI, resilient error handling, and export/import are built and
 working (see [Build](#build) below). **No live deployment exists yet** — see
-[Deploy](#deploy-vercel). Section 5 (hardening: optimistic UI, export/import,
-more tests) is not started.
+[Deploy](#deploy-vercel) for exactly what's left, and who has to do it.
 
 ---
 
@@ -56,12 +56,14 @@ The real app is specified in the build brief and starts from scratch either way.
 
 ## Build
 
-`docs/build-brief.md` sections 1–4 are done: stack + schema + auth, the Today
-screen + log sheet, the persistent bottom bar for catching a note or logging
-a class from anywhere, class detail (`/class/[id]` — syllabus with a
-rewrite-to-reorder editor, session history, edit/archive), and the weekly
-review (`/review` — pacing, open notes, recurring "stuck" values). Section 5
-(optimistic UI, export/import, more tests) is not started.
+`docs/build-brief.md` sections 1–5 are all done: stack + schema + auth, the
+Today screen + log sheet, the persistent bottom bar for catching a note or
+logging a class from anywhere, class detail (`/class/[id]` — syllabus with a
+rewrite-to-reorder editor, session history, edit/archive), the weekly review
+(`/review` — pacing, open notes, recurring "stuck" values), and hardening
+(optimistic checkbox toggles, error-resilient forms, `/api/export` +
+`/api/import`, and tests for the three things the brief specifically calls
+out as what would quietly ruin this app).
 
 ### Stack
 
@@ -83,14 +85,20 @@ review (`/review` — pacing, open notes, recurring "stuck" values). Section 5
   — not the runtime's local timezone. A UTC server (Vercel's default) and a
   Taiwan phone must agree on what day it is before 08:00 Taipei time (00:00
   UTC), and neither is guaranteed to be running in Taipei's own timezone.
+- Optimistic UI on every checkbox (ticking a note or a syllabus unit done
+  updates the screen instantly and only reverts if the save genuinely
+  failed) via React 19's `useOptimistic`. Every write action catches its own
+  database errors and returns a message instead of throwing, so a dropped
+  connection on school wifi shows "couldn't save, try again" with your
+  typed text still in the form — never a crashed sheet and lost work.
 
 ### Getting started on a fresh install
 
 There is still no class-*creation* UI — section 4 added editing an existing
 class (name/level/days/start time/students, plus archive) at
-`/class/[id]`, but not adding a new one. Creating one is out of scope
-through section 4; the brief deliberately keeps the app to exactly what's
-on the pre-class card (see `AGENTS.md`'s "no attendance, grades, or
+`/class/[id]`, but not adding a new one. None of the five sections asked
+for a creation screen; the brief deliberately keeps the app to exactly
+what's on the pre-class card (see `AGENTS.md`'s "no attendance, grades, or
 materials storage" rule). After `npm run db:push`, run:
 
 ```bash
@@ -101,8 +109,10 @@ This inserts one clearly-labelled example class ("Example class — edit or
 delete me") with a 3-unit syllabus, so the Today screen isn't empty. Edit its
 name, level, days, start time, students, and syllabus at `/class/[id]` once
 it exists. To add a genuinely *new* class (or delete one outright) for now,
-use `npm run db:studio` (Drizzle's browser-based table editor) — a
-class-creation screen is still section-5-or-later work.
+use `npm run db:studio` (Drizzle's browser-based table editor) or
+[`/api/import`](#export--import-your-data) with a hand-written JSON payload
+— there's no class-creation screen, and the build brief's five sections
+never asked for one (see `AGENTS.md`'s pre-class-card scope rule).
 
 ### Env vars
 
@@ -146,6 +156,28 @@ DATABASE_URL=postgres://postgres:<password>@localhost:5432/<db> npm test
 It uses a plain `pg` connection (works against local Postgres, CI Postgres,
 or Neon's own connection string), creates and deletes its own throwaway class
 row, and never touches your real data.
+
+### Export / import your data
+
+"I want to be able to leave" — the brief's own words. Both routes require
+the same passcode cookie the app itself uses, so authenticate in a browser
+first and reuse that cookie, or pass the passcode directly:
+
+```bash
+# Export everything (all classes, units, sessions, notes) as JSON:
+curl -b "tmh_passcode=<your APP_PASSCODE>" https://your-deploy.example.com/api/export \
+  -o backup.json
+
+# Import a backup. This REPLACES all data — it's a restore, not a merge.
+curl -b "tmh_passcode=<your APP_PASSCODE>" -X POST \
+  -H "Content-Type: application/json" \
+  --data @backup.json \
+  https://your-deploy.example.com/api/import
+```
+
+There's no in-app button for either — this is a power-user escape hatch, not
+a phone-first screen, so it stays out of what's on the pre-class card. See
+`docs/decisions.md` for why import replaces rather than merges.
 
 ### Deploy (Vercel)
 

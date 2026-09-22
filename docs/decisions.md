@@ -450,3 +450,148 @@ still-missing class-*creation* screen reuses the same field set and input
 style rather than inventing a second convention.
 **Affects:** `src/components/ClassEditSection.tsx` (new), `src/app/actions.ts`
 (`updateClassAction`, `toggleArchiveAction`).
+
+## 2026-09-22 — Claude Code — Section 5: what "optimistic UI on every write" means here
+
+**Decided:** Built true optimistic UI (React 19's `useOptimistic`, instant
+update, silent revert on failure) for the two checkbox interactions —
+ticking a note or a syllabus unit done — via a new shared
+`src/components/NoteChecklist.tsx` (used by both `ClassCard` and
+`ReviewScreen`) and `SyllabusSection`'s own optimistic unit list. Did
+**not** make the multi-field forms (log sheet, catch-a-note, class edit,
+syllabus rewrite) optimistic in the same sense — they still show a
+"Saving…" pending state and only close on confirmed success.
+**Why:** The brief's own justification — "I am on school wifi; a spinner
+between me and saving a note means I will stop using this" — describes
+exactly the tap-and-move-on interactions a checkbox is, not a multi-field
+form you're actively composing. Optimistically closing the log sheet before
+the write is confirmed would mean walking back into class having *seen*
+"saved" for something that then silently failed in the background — worse
+than a brief pending state, and in direct tension with the very next brief
+line ("if a write fails, keep the text in the form and say what happened").
+The checkbox taps have no form to keep open and nothing to lose by reverting
+visibly; the forms do.
+**Affects:** `src/components/NoteChecklist.tsx` (new), `src/components/ClassCard.tsx`,
+`src/components/ReviewScreen.tsx`, `src/components/SyllabusSection.tsx`,
+`src/app/actions.ts` (`toggleNoteAction`/`toggleUnitAction`/`toggleArchiveAction`
+now return `{ok, error?}` instead of `void`, so callers can revert).
+
+## 2026-09-22 — Claude Code — Section 5: write failures return a message, never throw
+
+**Decided:** Every server action's database calls are now wrapped in
+try/catch. A thrown error is logged server-side and turned into a returned
+`{error: "...", success: false}` (form actions) or `{ok: false, error}`
+(checkbox toggles) instead of propagating as an unhandled exception.
+**Why:** Before this, a genuine write failure (not a validation error —
+an actual DB/network exception) would have propagated past `useActionState`
+into React's nearest error boundary, unmounting the log sheet and losing
+whatever was typed. The brief is explicit that this must never happen
+("never silently lose typed text"). Since every field in the log sheet and
+catch-a-note sheet is already React-controlled state (not reset until
+`onClose()` fires on confirmed success), catching the error and returning
+it was the only piece missing — the text was already safe, it just needed
+a path that didn't crash the component tree to say so.
+**Affects:** `src/app/actions.ts` (every mutating action).
+
+## 2026-09-22 — Claude Code — Section 5: export replaces, doesn't merge; format and auth
+
+**Decided:** `GET /api/export` returns `{exportedAt, classes, units,
+sessions, notes}` — a flat dump of all four tables, timestamps as ISO
+strings. `POST /api/import` accepts the same shape and **replaces every
+row** (delete children → classes, then insert classes → children, both in
+FK-safe order) rather than merging or upserting. Both routes require the
+same passcode cookie as the rest of the app (enforced by `src/proxy.ts`'s
+matcher, which doesn't exclude `/api/export` or `/api/import`, plus
+`assertAuthenticated()` inside each handler as defense in depth, matching
+every other action). No in-app UI triggers either — they're `curl`-level
+tools, documented in the README with example commands.
+**Why:** The brief's justification is "I want to be able to leave" — a
+personal backup/restore/migrate-away escape hatch, not a mainstream feature,
+so it doesn't need (or deserve) a phone-first screen per `AGENTS.md`'s scope
+rule. Replace-not-merge was chosen because merge semantics need conflict
+rules the brief never specified (what happens when both sides have a
+session for the same class+date?), while replace has one unambiguous
+meaning: this file is now the truth. Validation
+(`src/lib/export-format.ts`, tested) is deliberately shallow — checks shape
+and required fields, not a full schema validator — because the database's
+own constraints (NOT NULL, foreign keys, the sessions unique index) catch
+anything this misses; it exists to turn "the whole import silently 500s
+after partially deleting your data" into a clear 400 with a specific
+message *before* anything is touched.
+**Affects:** `src/app/api/export/route.ts` (new), `src/app/api/import/route.ts`
+(new), `src/lib/export-format.ts` (new).
+
+## 2026-09-22 — Claude Code — Section 5: the two remaining named tests, and why they're pure-function tests
+
+**Decided:** Extracted `toTodayClass` (previously private to `queries.ts`)
+into `src/lib/today-class.ts`, matching the established pattern for
+DB-import-free pure logic. `src/lib/today-class.test.ts` covers "the Today
+card always shows the most recent session's nextOpener" and "toggling a
+unit done advances the current-unit marker" as unit tests against
+hand-built input arrays — no database needed. Two further tests in
+`src/db/session-upsert.test.ts` (DB-gated, per the existing pattern) confirm
+the piece the pure tests can't: that the actual SQL query
+(`orderBy(desc(date), desc(createdAt))` for sessions, `orderBy(asc(position))`
+for units) really does hand `toTodayClass` its rows in the order that logic
+assumes.
+**Why:** `queries.ts` imports `src/db/index.ts`, which throws at module
+load if `DATABASE_URL` isn't set — so nothing in `queries.ts`, pure or not,
+can be imported by a test in an environment with no database configured
+(exactly the reasoning behind pulling `countRecurringStuck`,
+`pickObviousClass`, and `deriveInitialFormValues` out in earlier passes).
+Splitting the *selection logic* (pure, cheap, thoroughly testable) from the
+*ordering guarantee* (needs a real database to mean anything) tests both
+halves of the actual risk instead of picking one and hoping the other holds.
+This completes all three tests build-brief.md section 5 names by number;
+the third (same-day edits) was already covered in the corrective pass.
+**Affects:** `src/lib/today-class.ts` (new), `src/lib/today-class.test.ts`
+(new), `src/db/queries.ts` (now re-exports rather than defines
+`toTodayClass`/`TodayClass`), `src/db/session-upsert.test.ts`.
+
+## 2026-09-22 — Claude Code — Real bug found live-testing section 5's own write-failure requirement
+
+**Decided:** Found, while verifying "if a write fails, keep the text in the
+form and say what happened," that a *client-side network failure* (the
+actual request never reaching the server — dropped wifi, not a server
+error) crashed the whole app to a browser-level "This page couldn't load /
+Reload / Back" screen, losing everything typed. Root cause: `<form
+action={someServerAction}>` driven by `useActionState` is a real, navigable
+HTML form; when React's JS-based interception of the submission fails at
+the network layer, the form's native submission behavior isn't fully
+suppressed, and the browser falls back to an actual top-level navigation
+attempt against that action — which then fails as a real navigation, not a
+catchable promise rejection. The server-side try/catch from a few decisions
+above (task "write failures return a message, never throw") only covers
+failures *after* a request reaches the server; it cannot touch a request
+that never arrives.
+
+Fixed by dropping `useActionState`'s form-action wiring in `LogSheet`,
+`NoteSheet`, and `ClassEditSection`, and replacing it with
+`onSubmit={handler}` where the handler calls `event.preventDefault()`
+**synchronously, first** (ruling out any native-navigation fallback,
+unconditionally) and then invokes the server action manually inside a
+`try`/`catch` within a transition, setting local state for both outcomes.
+Also added the same try/catch to every other client-invoked server-action
+call site that didn't already have one (`SyllabusSection`'s save and unit
+toggle, `NoteChecklist`'s note toggle, `ClassEditSection`'s archive toggle,
+`LogSheet`'s date-change lookup) — none of those go through a `<form
+action>` so they weren't at risk of the *navigation* failure mode, but an
+uncaught rejection from an async `startTransition` callback is its own
+hazard and the fix was the same shape either way. Along the way, also
+noticed `SyllabusSection`'s save handler discarded `updateSyllabusAction`'s
+returned error entirely and closed the editor unconditionally — fixed to
+show the error and stay open on failure, matching every other form.
+
+**Why:** This is the exact case build-brief.md section 5 exists to catch —
+"I am on school wifi" describes *packets not arriving*, not the server
+rejecting a well-formed request, and only live testing with an actually
+aborted request (not a mocked server error) surfaces the difference. Worth
+recording in detail because the failure mode is non-obvious: `<form
+action={fn}>` "just works" for the happy path and for server-thrown errors,
+which is exactly why the client-side navigation-fallback gap is easy to
+ship without noticing — every earlier manual check in this project used
+`context.setOffline()` or a working request, never a request that fails
+mid-flight while a real `<form>` element is involved.
+**Affects:** `src/components/LogSheet.tsx`, `src/components/NoteSheet.tsx`,
+`src/components/ClassEditSection.tsx`, `src/components/SyllabusSection.tsx`,
+`src/components/NoteChecklist.tsx`.

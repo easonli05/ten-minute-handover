@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState, useTransition } from "react";
+import { useState, useTransition, type FormEvent } from "react";
 import {
   toggleArchiveAction,
   updateClassAction,
@@ -9,28 +9,47 @@ import {
 import type { ClassDetail } from "@/db/queries";
 
 const initialState: UpdateClassState = { error: null, success: false };
+const NETWORK_ERROR: UpdateClassState = {
+  error: "Couldn't reach the server — check your connection and try again. What you typed is still here.",
+  success: false,
+};
+const ARCHIVE_NETWORK_ERROR = "Couldn't reach the server — try again.";
 
 export function ClassEditSection({ data }: { data: ClassDetail }) {
   const { class: cls } = data.today;
   const [editing, setEditing] = useState(false);
-  const [state, formAction, pending] = useActionState(
-    updateClassAction,
-    initialState,
-  );
+  const [state, setState] = useState<UpdateClassState>(initialState);
+  const [pending, startSubmit] = useTransition();
   const [archivePending, startArchiveTransition] = useTransition();
+  const [archiveError, setArchiveError] = useState<string | null>(null);
 
-  // Adjusted during render, not in an effect (React's documented pattern
-  // for "reset state when something changes" — see
-  // https://react.dev/learn/you-might-not-need-an-effect). Tracks the last
-  // `state` object useActionState handed back; useActionState returns a
-  // fresh object on every dispatch, so this fires exactly once per
-  // successful save. Keying on `.success` alone instead would misfire the
-  // next time "Edit" is reopened, since that stale `true` never changes
-  // back — closing the form again before the teacher can touch it.
-  const [lastSeenState, setLastSeenState] = useState(state);
-  if (state !== lastSeenState) {
-    setLastSeenState(state);
-    if (state.success) setEditing(false);
+  // See LogSheet's handleSubmit for why this isn't <form action={updateClassAction}>.
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    startSubmit(async () => {
+      try {
+        const result = await updateClassAction(state, formData);
+        setState(result);
+        if (result.success) setEditing(false);
+      } catch (err) {
+        console.error(err);
+        setState(NETWORK_ERROR);
+      }
+    });
+  }
+
+  function handleToggleArchive() {
+    setArchiveError(null);
+    startArchiveTransition(async () => {
+      try {
+        const result = await toggleArchiveAction(cls.id, !cls.archived);
+        if (!result.ok) setArchiveError(result.error ?? ARCHIVE_NETWORK_ERROR);
+      } catch (err) {
+        console.error(err);
+        setArchiveError(ARCHIVE_NETWORK_ERROR);
+      }
+    });
   }
 
   return (
@@ -55,7 +74,7 @@ export function ClassEditSection({ data }: { data: ClassDetail }) {
       ) : null}
 
       {editing ? (
-        <form action={formAction} className="mt-4 space-y-3">
+        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
           <input type="hidden" name="classId" value={cls.id} />
           <label className="block">
             <span className="text-sm font-medium">Name</span>
@@ -133,15 +152,16 @@ export function ClassEditSection({ data }: { data: ClassDetail }) {
       <button
         type="button"
         disabled={archivePending}
-        onClick={() =>
-          startArchiveTransition(() => {
-            toggleArchiveAction(cls.id, !cls.archived);
-          })
-        }
+        onClick={handleToggleArchive}
         className="mt-4 w-full rounded-full border border-surface-border px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
       >
         {cls.archived ? "Unarchive" : "Archive class"}
       </button>
+      {archiveError ? (
+        <p role="alert" className="mt-1.5 text-xs text-danger">
+          {archiveError}
+        </p>
+      ) : null}
     </section>
   );
 }

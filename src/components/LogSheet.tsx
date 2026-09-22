@@ -1,10 +1,15 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition, type FormEvent } from "react";
 import { getSessionForDateAction, logSessionAction, type LogSessionState } from "@/app/actions";
 import type { TodayClass } from "@/db/queries";
 import { todayISO } from "@/lib/date";
 import { deriveInitialFormValues, fieldsFromExistingSession } from "@/lib/log-sheet-form";
+
+const NETWORK_ERROR: LogSessionState = {
+  error: "Couldn't reach the server — check your connection and try again. What you typed is still here.",
+  success: false,
+};
 
 const STUCK_CHIPS = [
   "pronunciation",
@@ -25,10 +30,8 @@ export function LogSheet({
   onClose: () => void;
 }) {
   const { class: cls, latestSession, loggedToday, unit } = data;
-  const [state, formAction, pending] = useActionState(
-    logSessionAction,
-    initialState,
-  );
+  const [state, setState] = useState<LogSessionState>(initialState);
+  const [pending, startSubmit] = useTransition();
 
   const [date, setDate] = useState(() => todayISO());
   const initialFields = useState(() =>
@@ -61,12 +64,19 @@ export function LogSheet({
 
     const requestId = ++requestIdRef.current;
     startDateTransition(async () => {
-      const existing = await getSessionForDateAction(cls.id, newDate);
-      if (requestIdRef.current !== requestId) return; // a newer change won the race
-      const fields = fieldsFromExistingSession(existing);
-      setCovered(fields.covered);
-      setStuck(fields.stuck);
-      setNextOpener(fields.nextOpener);
+      try {
+        const existing = await getSessionForDateAction(cls.id, newDate);
+        if (requestIdRef.current !== requestId) return; // a newer change won the race
+        const fields = fieldsFromExistingSession(existing);
+        setCovered(fields.covered);
+        setStuck(fields.stuck);
+        setNextOpener(fields.nextOpener);
+      } catch (err) {
+        // A failed lookup just means the fields don't auto-fill for this
+        // date — nothing typed is at risk, so this fails quietly rather
+        // than surfacing a second error banner on top of the save one.
+        console.error(err);
+      }
     });
   }
 
@@ -75,12 +85,33 @@ export function LogSheet({
     stuckRef.current?.focus();
   }
 
+  // Not <form action={logSessionAction}>: on a real network failure (not a
+  // server-side error — the request never arriving at all, the exact "school
+  // wifi drops" case the brief calls out) a form with a native `action`
+  // falls back to an actual browser navigation once React's own fetch
+  // rejects, which replaces this whole page with a browser-level error
+  // screen and loses every typed field. preventDefault() up front rules
+  // that out completely; the catch below turns "the request never landed"
+  // into the same on-screen message a server-side failure gets.
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    startSubmit(async () => {
+      try {
+        setState(await logSessionAction(state, formData));
+      } catch (err) {
+        console.error(err);
+        setState(NETWORK_ERROR);
+      }
+    });
+  }
+
   const unitNumber = Math.min(unit.doneCount + 1, unit.total);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
       <div className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-y-auto rounded-t-2xl bg-surface sm:rounded-2xl">
-        <form action={formAction} className="flex flex-1 flex-col">
+        <form onSubmit={handleSubmit} className="flex flex-1 flex-col">
           <input type="hidden" name="classId" value={cls.id} />
 
           <div className="border-b border-surface-border p-5">

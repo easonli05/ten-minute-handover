@@ -219,16 +219,20 @@ Harden it for daily use:
 - A README with the env vars, the Turso/Neon setup commands, and the deploy step.
 ```
 
-**Partially done ahead of schedule** (2026-09-22 corrective pass, see
-`docs/decisions.md`): the seed script exists (`scripts/seed.ts` /
-`npm run db:seed`), and a `vitest` suite exists covering same-day-edit
-(`src/db/session-upsert.test.ts`) and the Taipei-timezone logic
-(`src/lib/date.test.ts`, `src/lib/log-sheet-form.test.ts`) — the two bugs
-that corrective pass fixed. "Today card shows the most recent session's
-nextOpener" and "toggling a unit done advances the current-unit marker" were
-verified manually this pass (and in section 2's) but have no automated test
-yet. Optimistic UI, `/api/export`/import, and write-failure handling are
-still not started.
+**Done** (2026-09-22). The seed script (pulled forward in the corrective
+pass) is `scripts/seed.ts` / `npm run db:seed`. Optimistic UI is
+`useOptimistic` on the two checkbox interactions (notes, syllabus units) —
+see `docs/decisions.md` for why the multi-field forms stayed
+pending-state-on-save instead. Write-failure handling: every mutating
+action in `src/app/actions.ts` catches its own DB errors and returns a
+message instead of throwing, and every form field was already
+React-controlled state that survives a failed save untouched. Export/import
+are `GET /api/export` and `POST /api/import` (replace-semantics, documented
+in the README, no in-app UI — see `docs/decisions.md` for why). All three
+named tests exist: same-day-edit (`src/db/session-upsert.test.ts`, from the
+corrective pass), and nextOpener-shows-latest / unit-advance as pure-logic
+tests in `src/lib/today-class.test.ts` plus DB-ordering confirmation in
+`src/db/session-upsert.test.ts`.
 
 ---
 
