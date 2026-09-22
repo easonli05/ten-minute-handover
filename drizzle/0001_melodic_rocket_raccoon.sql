@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "sessions_class_id_date_unique" ON "sessions" USING btree ("class_id","date");

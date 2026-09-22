@@ -6,6 +6,7 @@ import {
   timestamp,
   date,
   jsonb,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 export const classes = pgTable("classes", {
@@ -36,22 +37,29 @@ export const units = pgTable("units", {
   done: boolean("done").notNull().default(false),
 });
 
-// One row per class actually taught.
-export const sessions = pgTable("sessions", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  classId: text("class_id")
-    .notNull()
-    .references(() => classes.id, { onDelete: "cascade" }),
-  date: date("date").notNull(),
-  covered: text("covered"),
-  stuck: text("stuck"),
-  nextOpener: text("next_opener"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+// One row per class actually taught. Unique on (classId, date) so logging the
+// same class twice in a day upserts instead of creating a second row.
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    classId: text("class_id")
+      .notNull()
+      .references(() => classes.id, { onDelete: "cascade" }),
+    date: date("date").notNull(),
+    covered: text("covered"),
+    stuck: text("stuck"),
+    nextOpener: text("next_opener"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("sessions_class_id_date_unique").on(table.classId, table.date),
+  ],
+);
 
 // Observations caught in or after class; separate lifecycle from sessions.
 export const notes = pgTable("notes", {

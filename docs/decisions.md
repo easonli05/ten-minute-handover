@@ -111,3 +111,57 @@ renamed export) — used for the passcode check; (2) `cookies()` and a page's
 either fails to run (old middleware filename is ignored) or throws at runtime
 (sync access to now-async APIs).
 **Affects:** `src/proxy.ts`, `src/app/api/login/route.ts`, `src/app/login/page.tsx`.
+
+## 2026-09-22 — Claude Code — Accent colour: teal
+**Decided:** Single strong accent is teal (`#0f766e` light / `#2dd4bf` dark),
+against a warm off-white / near-black neutral background — not pure white/black.
+Tokens live as CSS variables in `globals.css`, wired through Tailwind's
+`@theme inline` (`bg-accent`, `text-accent-foreground`, `bg-surface`, etc.).
+**Why:** The brief asks for "a single strong accent and keep everything else
+quiet." Teal reads calm rather than alarming (ruled out red/orange) and isn't
+the generic SaaS-blue default. Off-white/near-black neutrals (not pure
+`#fff`/`#000`) reduce glare for a screen read standing up under fluorescent
+corridor lighting.
+**Affects:** `src/app/globals.css`, every component built from here on.
+
+## 2026-09-22 — Claude Code — Section 2: sessions gets a real unique constraint
+**Decided:** Added `uniqueIndex("sessions_class_id_date_unique")` on
+`(classId, date)` (not in the brief's original schema) and used
+`onConflictDoUpdate` in `logSessionAction` targeting that pair.
+**Why:** The brief's rule — "logging the same class twice on one day edits the
+existing row" — has no atomic implementation without a DB-level constraint;
+a check-then-insert from the app is a race condition. This is the smallest
+change that makes the rule actually true rather than "usually true."
+**Affects:** `src/db/schema.ts` (migration `0001`), `src/app/actions.ts`.
+
+## 2026-09-22 — Claude Code — Card's "Note" button is a minimal stand-in for section 3
+**Decided:** Screen A's per-card "Note" button (listed in section 2) opens a
+small sheet scoped to that one class — student chip, optional name, one
+textarea, save — writing straight to the `notes` table. It is not the
+persistent bottom-bar "catch a note" flow section 3 specifies.
+**Why:** Section 2 lists the button but the fast, reachable-from-anywhere
+capture path is explicitly section 3's job. Building a real version now would
+either duplicate work once section 3 lands or make section 3 redundant.
+**Affects:** `src/components/NoteSheet.tsx`. Expect this component to be
+superseded (or reused) when section 3 builds the bottom bar.
+
+## 2026-09-22 — Claude Code — How section 2 was verified
+**Decided:** Before committing, started a local Postgres 16 (already present
+on this box), applied both migrations directly with `psql`, and — via a
+transient `drizzle-orm/node-postgres` swap of `src/db/index.ts` (reverted
+before commit; `pg`/`playwright` installed with `--no-save`, never touching
+`package.json`) — ran the app for real: logged in, submitted the log sheet
+twice same-day and confirmed one row with the latest values, toggled a unit
+done and confirmed the card's current unit advanced, caught a note and ticked
+it done, and screenshotted both colour schemes. This is exactly the kind of
+check section 5 formalises as tests later; doing it by hand now caught that
+`neon()` validates the connection-string *format* at module load, so
+`DATABASE_URL` must be a well-formed Postgres URL at **build** time too, not
+just runtime — documented in the README rather than left to surprise the next
+deploy.
+**Why:** section 5 explicitly calls same-day-edit, "today card shows latest
+nextOpener," and unit-advance the three things that would quietly ruin this
+app. Trusting that the code compiles was not enough to believe those three
+things actually hold.
+**Affects:** Confidence only — no shipped file. Verification scripts lived in
+an untracked `scripts/` dir and were deleted after use, never staged.

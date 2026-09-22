@@ -75,6 +75,11 @@ Copy `.env.example` to `.env.local` and fill in:
 - `APP_PASSCODE` — any long random string; this is the one passcode that
   unlocks the app
 
+Both must be set for `npm run build` to succeed, not just for `dev`/`start` —
+the Today screen's data layer is imported at build time even though its route
+is dynamic, so a missing or malformed `DATABASE_URL` fails the build with a
+clear error rather than surfacing later at runtime.
+
 ### Local setup
 
 ```bash
