@@ -12,7 +12,8 @@ passcode auth, the Today screen + log sheet, the persistent "catch a note"
 bottom bar, class detail (`/class/[id]`), the weekly review (`/review`),
 optimistic UI, resilient error handling, and export/import are built and
 working (see [Build](#build) below). **No live deployment exists yet** — see
-[Deploy](#deploy-vercel) for exactly what's left, and who has to do it.
+[Deploy](#deploy-cloudflare-workers) for exactly what's left, and who has to
+do it.
 
 ---
 
@@ -69,7 +70,14 @@ out as what would quietly ruin this app).
 
 - Next.js 16 (App Router) + TypeScript + Tailwind v4
 - Postgres on [Neon](https://neon.tech) via `drizzle-orm/neon-http` — see
-  `docs/decisions.md` for why Neon over Turso
+  `docs/decisions.md` for why Neon over Turso. It talks to Neon over plain
+  HTTPS rather than a TCP connection, which is also why it runs unmodified on
+  Cloudflare Workers (see [Deploy](#deploy-cloudflare-workers))
+- Deployed to **Cloudflare Workers** via
+  [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare), which
+  converts the standard `next build` output into a Worker. See
+  [Deploy](#deploy-cloudflare-workers) — the brief originally named Vercel as
+  the deploy target; `docs/decisions.md` logs why that changed.
 - Single-passcode auth: `src/proxy.ts` (Next.js 16's replacement for
   `middleware.ts`) checks an httpOnly cookie against `APP_PASSCODE`, set for 90
   days by `/api/login`
@@ -82,9 +90,10 @@ out as what would quietly ruin this app).
 - All teaching dates (today, meeting-day sorting, status labels, the log
   sheet's default date) are computed in **Asia/Taipei**, explicitly, via
   `Intl.DateTimeFormat(..., { timeZone: "Asia/Taipei" })` in `src/lib/date.ts`
-  — not the runtime's local timezone. A UTC server (Vercel's default) and a
-  Taiwan phone must agree on what day it is before 08:00 Taipei time (00:00
-  UTC), and neither is guaranteed to be running in Taipei's own timezone.
+  — not the runtime's local timezone. A UTC server (Cloudflare Workers'
+  default, like most hosts) and a Taiwan phone must agree on what day it is
+  before 08:00 Taipei time (00:00 UTC), and neither is guaranteed to be
+  running in Taipei's own timezone.
 - Optimistic UI on every checkbox (ticking a note or a syllabus unit done
   updates the screen instantly and only reverts if the save genuinely
   failed) via React 19's `useOptimistic`. Every write action catches its own
@@ -179,18 +188,41 @@ There's no in-app button for either — this is a power-user escape hatch, not
 a phone-first screen, so it stays out of what's on the pre-class card. See
 `docs/decisions.md` for why import replaces rather than merges.
 
-### Deploy (Vercel)
+### Deploy (Cloudflare Workers)
 
-**No live deployment exists yet.** Nobody has run these steps against a real
-Vercel/Neon account in this environment — building, linting, and testing have
-all been verified locally (see `docs/decisions.md`), but "it builds" is not
-"it's deployed." Steps to actually deploy:
+**No live deployment exists yet.** This sandbox has no Cloudflare account, no
+authenticated `wrangler`, and no Neon account — so nobody has run these steps
+against real infrastructure. What *has* been verified locally, against this
+exact config: `opennextjs-cloudflare build` completes cleanly, and the
+resulting Worker runs correctly under `wrangler dev` — the passcode
+cookie/redirect flow, static assets, the PWA manifest, and the Node.js
+`proxy.ts` (Next 16's middleware) all work end-to-end. The one thing that
+couldn't be verified here is a real Neon `DATABASE_URL`; the local one used
+for that check is a plain Postgres, which `drizzle-orm/neon-http` correctly
+refuses to talk to, so DB-backed pages returned a clean 500 instead of a
+crash. `docs/decisions.md` has the full writeup, including why the deploy
+target changed from the brief's original Vercel pick.
 
-1. Push this repo to GitHub and import it in Vercel.
-2. Add the [Neon integration](https://vercel.com/integrations/neon) from the
-   Vercel dashboard — it provisions a database and injects `DATABASE_URL`
-   automatically — or set `DATABASE_URL` manually under Project Settings →
-   Environment Variables.
-3. Set `APP_PASSCODE` under the same Environment Variables screen.
-4. Deploy. Run `npm run db:push` and `npm run db:seed` locally (pointed at the
-   same `DATABASE_URL`) once, to create the tables and the example class.
+Deploy config lives in `wrangler.jsonc` and `open-next.config.ts`, already
+committed. Steps to actually deploy:
+
+1. Create a Cloudflare account and a Neon account (if you don't already have
+   one — the [Neon integration](https://vercel.com/integrations/neon) that
+   auto-provisions `DATABASE_URL` is Vercel-specific, so on Cloudflare you
+   create the Neon project yourself and copy its connection string).
+2. `npx wrangler login` once, locally, to authenticate the CLI.
+3. Set the two secrets Cloudflare needs at runtime:
+   ```bash
+   npx wrangler secret put DATABASE_URL     # paste the Neon connection string
+   npx wrangler secret put APP_PASSCODE     # paste a long random string
+   ```
+4. Run `npm run db:push` and `npm run db:seed` locally, pointed at that same
+   `DATABASE_URL`, to create the tables and the example class.
+5. `npm run cf:deploy` — this runs `opennextjs-cloudflare build` (adapts the
+   Next.js build for Workers) followed by `wrangler deploy`, and prints the
+   `*.workers.dev` URL it deployed to. Point a custom domain at it from the
+   Cloudflare dashboard if you want one.
+
+To preview a production build locally before deploying, `npm run cf:preview`
+does the same build and serves it with `wrangler dev` instead — it reads
+`DATABASE_URL`/`APP_PASSCODE` from `.env.local`, same as `next dev`.

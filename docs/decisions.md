@@ -595,3 +595,68 @@ mid-flight while a real `<form>` element is involved.
 **Affects:** `src/components/LogSheet.tsx`, `src/components/NoteSheet.tsx`,
 `src/components/ClassEditSection.tsx`, `src/components/SyllabusSection.tsx`,
 `src/components/NoteChecklist.tsx`.
+
+## 2026-09-22 — Claude Code — Deploy target changed: Vercel → Cloudflare Workers
+
+**Decided:** Deploy via `@opennextjs/cloudflare` to Cloudflare Workers,
+replacing the brief's original Vercel pick. Added `wrangler.jsonc` and
+`open-next.config.ts`, both committed, plus `wrangler` and
+`@opennextjs/cloudflare` as devDependencies and two scripts —
+`npm run cf:preview` (build + `wrangler dev`, local only) and
+`npm run cf:deploy` (build + `wrangler deploy`, needs a real Cloudflare
+account). Requested directly by Eason ("deploy it to cloudflare instead"),
+so treated as authorizing whatever deploy tooling that requires, per
+`AGENTS.md`'s "ask before adding a dependency" rule.
+
+**Why it fits without other changes:** the app already used
+`drizzle-orm/neon-http`, which talks to Neon over plain HTTPS `fetch` rather
+than a raw TCP/wire-protocol connection (see the 2026-09-22 "Neon over
+Turso" entry above) — the same property that made this driver awkward for
+local/CI testing (a separate `pg`-based path exists only for that) is what
+makes it run unmodified in a Workers isolate, which has no TCP sockets.
+No `src/db/` code changed.
+
+**What was actually verified in this sandbox** (no Cloudflare or Neon
+account access here, same constraint as the earlier Vercel attempt):
+- `npx opennextjs-cloudflare build` completes cleanly against this exact
+  Next.js 16.3.5 / Turbopack setup — no code changes were needed to make
+  Turbopack's output convert; some setup guides describe a build failure and
+  a workaround of forcing webpack, but that did not reproduce here with this
+  package version (`@opennextjs/cloudflare` 1.20.6). If a future upgrade
+  reintroduces it, the fix is `next build --webpack` or `turbo: false` in
+  `next.config.ts`.
+- `npx wrangler dev` then served the built Worker on localhost and was
+  exercised with real HTTP requests: unauthenticated `/` correctly
+  307-redirects to `/login`; POSTing the right passcode to `/api/login` sets
+  the `tmh_passcode` cookie and redirects home; an authenticated request to
+  `/` then reaches the DB-backed page and fails with a clean Next.js 500 (not
+  a Workers-level crash) — expected, because the `DATABASE_URL` available
+  locally is a plain Postgres (`postgres://postgres:...@localhost:5432/tmh`,
+  used elsewhere in this project for the `pg`-based test/seed path), and
+  `drizzle-orm/neon-http` correctly refuses to speak Postgres wire protocol
+  to it. This confirms the request pipeline (Workers runtime, cookies,
+  static assets, PWA manifest, React SSR, error boundary) works; it does not
+  confirm a real Neon connection over Workers, which needs an account this
+  environment doesn't have.
+- One real, unavoidable compatibility note: OpenNext's build printed `WARN
+  Node.js middleware support is experimental in cloudflare, and not
+  officially maintained by OpenNext maintainers.` This isn't a bug in
+  `src/proxy.ts` — Next.js 16 made Proxy (middleware's replacement) default
+  to the Node.js runtime unconditionally, and explicitly documents that
+  setting a `runtime` config to opt back into the Edge runtime "will throw
+  an error" (`node_modules/next/dist/docs/.../proxy.md`). So there is no
+  Edge-runtime option to fall back to; the experimental-but-working path
+  above is the only one available. Worth re-checking this warning on future
+  `@opennextjs/cloudflare` upgrades in case it becomes fully supported.
+- `npm run lint`, `npx tsc --noEmit`, and `npm test` (49 passed / 4 skipped,
+  same as before this change) all stayed clean with the new dependencies.
+
+**Still true, unchanged from the Vercel attempt:** no live deployment exists.
+Actually deploying needs `npx wrangler login` and a real Neon
+`DATABASE_URL`, neither of which this environment can provide — see
+README's "Deploy (Cloudflare Workers)" section for the exact remaining
+steps.
+**Affects:** `package.json` (deps + `cf:preview`/`cf:deploy` scripts),
+`wrangler.jsonc` (new), `open-next.config.ts` (new), `.gitignore`
+(`.open-next`/`.wrangler`), `README.md`'s Deploy section,
+`docs/build-brief.md`'s deploy-target line.

@@ -99,6 +99,13 @@ notes                           -- observations, caught in or after class
   createdAt     timestamp
 ```
 
+**Deviation:** the deploy target above says Vercel; the live deploy target is
+now **Cloudflare Workers** instead, via `@opennextjs/cloudflare` — see
+`docs/decisions.md` for why. The original prompt text above is left as
+written (it is a verbatim record of what was actually asked), not edited to
+match; everything else in it — stack, schema, PWA, single-passcode auth — is
+unchanged and still accurate.
+
 ---
 
 ## 2. The two core screens (second prompt)
