@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useTransition } from "react";
 import { toggleNoteAction } from "@/app/actions";
 import type { TodayClass } from "@/db/queries";
@@ -30,7 +31,11 @@ export function ClassCard({
     <article className="rounded-2xl border border-surface-border bg-surface p-5 shadow-sm">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold leading-tight">{cls.name}</h2>
+          <h2 className="text-lg font-semibold leading-tight">
+            <Link href={`/class/${cls.id}`} className="hover:underline">
+              {cls.name}
+            </Link>
+          </h2>
           <p className="mt-0.5 text-sm text-muted">
             {[cls.level, cls.days.join(", ")].filter(Boolean).join(" · ")}
             {" · "}

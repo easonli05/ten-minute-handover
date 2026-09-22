@@ -50,9 +50,6 @@ These came from the person who will actually use this. Do not optimise them away
 
 Things genuinely undecided. If you resolve one, log it.
 
-- Turso/SQLite vs Neon/Postgres — either is fine, pick one and commit to it.
-- Whether the weekly review is worth building before the daily loop has been used
-  for a month. Probably not.
 - Voice capture for the three post-class fields. Would cut ninety seconds to
   thirty, but only worth building if the typed version already sticks.
 

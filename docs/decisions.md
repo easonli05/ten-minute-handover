@@ -356,3 +356,97 @@ there's no reliable way to rank multiple same-day classes by proximity to
 now; "meets today" is the one signal the schema actually supports.
 **Affects:** `src/lib/class-picker.ts` (new), `src/components/BottomBar.tsx`
 (new), `src/components/ClassPickerSheet.tsx` (new), `src/components/TodayScreen.tsx`.
+
+## 2026-09-22 — Claude Code — Section 4: weekly review built now, resolving an open question
+
+**Decided:** `AGENTS.md`'s open questions listed "whether the weekly review
+is worth building before the daily loop has been used for a month. Probably
+not." Built it anyway this pass, on Eason's explicit instruction to continue
+section 4 (which bundles `/class/[id]` and `/review` together in the
+brief). Removing the resolved line from `AGENTS.md`'s open questions below —
+also removed the Turso-vs-Postgres line there while touching that list,
+since it was resolved (see the 2026-09-22 Neon decision above) but never
+struck off.
+**Why:** "Probably not" was a default absent other instruction, not a
+standing rule — an explicit "continue section four" is exactly the kind of
+instruction that overrides a soft default. Logging this rather than silently
+building it, since a later agent reading the open-questions list would
+otherwise wonder why it was ignored.
+**Affects:** `AGENTS.md` (open question removed), `src/app/review/`.
+
+## 2026-09-22 — Claude Code — Section 4: syllabus edits preserve progress by exact-title match
+
+**Decided:** "Reorder by rewriting" (the brief's words) is implemented as:
+parse the textarea into lines, and for each line, if its text exactly
+matches an existing unit's title, that unit is kept (same id, same `done`,
+new `position`) — otherwise it's treated as a brand-new unit (`done: false`).
+Existing units whose exact title doesn't appear anywhere in the new text are
+deleted. Pure diffing logic lives in `src/lib/syllabus.ts` (tested), applied
+sequentially (not in a transaction — see the note below) by
+`updateSyllabusAction`.
+**Why:** The brief specifies the interaction (rewrite the whole list) but
+not the data semantics underneath it. The alternative — matching by line
+*position* instead of exact text — would silently reassign `done` flags to
+the wrong units the moment a line is inserted or removed above others,
+which is worse than the chosen behavior's one sharp edge (rewording a line
+resets that unit's progress, since it now reads as new). Rewording being
+rare relative to reordering/adding/removing, and progress loss being
+visible immediately (the unit shows unchecked), made this the safer
+default over trying to fuzzy-match reworded titles.
+**Affects:** `src/lib/syllabus.ts` (new), `src/app/actions.ts`
+(`updateSyllabusAction`), `src/components/SyllabusSection.tsx`.
+
+## 2026-09-22 — Claude Code — Section 4: multi-step writes stay un-transacted
+
+**Decided:** `updateSyllabusAction`'s delete/update/insert sequence (and
+`logSessionAction`'s session-upsert + unit-finish + note-insert sequence
+from section 2) run as separate sequential statements, not inside a
+`db.transaction()`.
+**Why:** The app's driver (`drizzle-orm/neon-http`, chosen in an earlier
+decision above) talks to Neon over HTTP, one statement per round trip;
+multi-statement transactions aren't a good fit for that driver the way
+they are for a persistent wire-protocol connection. For a single-user app
+with no concurrent writers, the actual risk a transaction would guard
+against — two different requests interleaving mid-write — doesn't arise in
+practice. Worth writing down so nobody "fixes" this by adding a transaction
+that either doesn't work with this driver or adds complexity for a race
+condition that structurally can't happen here.
+**Affects:** `src/app/actions.ts`.
+
+## 2026-09-22 — Claude Code — Section 4: "keeps coming back" counts across all classes, not per class
+
+**Decided:** `countRecurringStuck` (in `src/lib/recurring-stuck.ts`) pools
+every session's `stuck` value from every non-archived class before
+normalising and counting — it is one global list on `/review`, not one list
+per class.
+**Why:** The brief's own example — "these four students all need a lesson
+on articles" — describes a pattern showing up *across* the roster, which a
+per-class breakdown would fragment into several single-digit counts instead
+of surfacing the cross-class signal that makes this "the highest-value
+thing in the app" (the brief's words). A student-attribution or per-class
+breakdown was left out for the same reason section 2 didn't build it: the
+chips already exist to make values repeat exactly, and anything past a
+flat count-and-sort is the "something clever" the brief explicitly says to
+avoid.
+**Affects:** `src/lib/recurring-stuck.ts` (new), `src/db/queries.ts`
+(`getReviewData`), `src/components/ReviewScreen.tsx`.
+
+## 2026-09-22 — Claude Code — Section 4: what "edit class" and "archive" mean
+
+**Decided:** "Edit" (brief: "Edit and archive class") opens a form for every
+field the class has — name, level, days, start time, students — since the
+brief never specifies a subset and there's no class-creation screen yet to
+have already covered some of them. `days` and `students` are edited as
+comma-separated free text (matching how they're already free-form
+string arrays in the schema, and how `level`/`startTime` are already
+free text), not chip-pickers or structured inputs. "Archive" is a
+reversible toggle (`toggleArchiveAction`, flips `archived` back and forth),
+not a delete — consistent with `notes.done` and the rest of the schema's
+soft-state pattern, and because an accidental archive shouldn't need a
+database console to undo.
+**Why:** These are gaps the brief left for an agent to fill sensibly rather
+than genuine ambiguities to flag; recorded so a later agent building the
+still-missing class-*creation* screen reuses the same field set and input
+style rather than inventing a second convention.
+**Affects:** `src/components/ClassEditSection.tsx` (new), `src/app/actions.ts`
+(`updateClassAction`, `toggleArchiveAction`).

@@ -7,11 +7,12 @@ ten-minute breaks between them.
 last thing you write after a class — *"open next class with…"* — is the plan
 waiting for you when you walk back in.
 
-Status: **sections 1–3 of the build brief done** — scaffold, schema, passcode
-auth, the Today screen + log sheet, and the persistent "catch a note" bottom
-bar are built and working (see [Build](#build) below). **No live deployment
-exists yet** — see [Deploy](#deploy-vercel). Sections 4–5 (class detail /
-weekly review, hardening) are not started.
+Status: **sections 1–4 of the build brief done** — scaffold, schema, passcode
+auth, the Today screen + log sheet, the persistent "catch a note" bottom bar,
+class detail (`/class/[id]`), and the weekly review (`/review`) are built and
+working (see [Build](#build) below). **No live deployment exists yet** — see
+[Deploy](#deploy-vercel). Section 5 (hardening: optimistic UI, export/import,
+more tests) is not started.
 
 ---
 
@@ -55,10 +56,12 @@ The real app is specified in the build brief and starts from scratch either way.
 
 ## Build
 
-`docs/build-brief.md` sections 1–3 are done: stack + schema + auth, the Today
-screen + log sheet, and the persistent bottom bar for catching a note or
-logging a class from anywhere (not just from a specific card). Sections 4–5
-(class detail, weekly review, hardening) are not started.
+`docs/build-brief.md` sections 1–4 are done: stack + schema + auth, the Today
+screen + log sheet, the persistent bottom bar for catching a note or logging
+a class from anywhere, class detail (`/class/[id]` — syllabus with a
+rewrite-to-reorder editor, session history, edit/archive), and the weekly
+review (`/review` — pacing, open notes, recurring "stuck" values). Section 5
+(optimistic UI, export/import, more tests) is not started.
 
 ### Stack
 
@@ -83,20 +86,23 @@ logging a class from anywhere (not just from a specific card). Sections 4–5
 
 ### Getting started on a fresh install
 
-There is no class-creation UI yet (that's out of scope through section 3, and
-the brief deliberately keeps the app to exactly what's on the pre-class
-card — see `AGENTS.md`'s "no attendance, grades, or materials storage" rule).
-After `npm run db:push`, run:
+There is still no class-*creation* UI — section 4 added editing an existing
+class (name/level/days/start time/students, plus archive) at
+`/class/[id]`, but not adding a new one. Creating one is out of scope
+through section 4; the brief deliberately keeps the app to exactly what's
+on the pre-class card (see `AGENTS.md`'s "no attendance, grades, or
+materials storage" rule). After `npm run db:push`, run:
 
 ```bash
 npm run db:seed
 ```
 
 This inserts one clearly-labelled example class ("Example class — edit or
-delete me") with a 3-unit syllabus, so the Today screen isn't empty. Edit or
-add real classes directly in the database for now (`npm run db:studio` opens
-Drizzle's browser-based table editor) — a proper class-creation screen is
-section-4-or-later work per the brief.
+delete me") with a 3-unit syllabus, so the Today screen isn't empty. Edit its
+name, level, days, start time, students, and syllabus at `/class/[id]` once
+it exists. To add a genuinely *new* class (or delete one outright) for now,
+use `npm run db:studio` (Drizzle's browser-based table editor) — a
+class-creation screen is still section-5-or-later work.
 
 ### Env vars
 

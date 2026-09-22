@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import type { TodayClass } from "@/db/queries";
 import { pickObviousClass } from "@/lib/class-picker";
@@ -46,7 +47,12 @@ export function TodayScreen({ classes }: { classes: TodayClass[] }) {
   return (
     <>
       <main className="mx-auto max-w-lg space-y-4 p-4 pb-28">
-        <h1 className="px-1 text-xl font-semibold">Today</h1>
+        <div className="flex items-baseline justify-between px-1">
+          <h1 className="text-xl font-semibold">Today</h1>
+          <Link href="/review" className="text-sm text-muted hover:underline">
+            Review
+          </Link>
+        </div>
         {classes.length === 0 ? (
           <p className="px-1 text-sm text-muted">
             No classes yet. Add one to get started.
