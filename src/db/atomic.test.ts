@@ -83,33 +83,43 @@ describe.skipIf(!databaseUrl)("runAtomically", () => {
     await expect(runAtomically(db, () => [])).resolves.toBeUndefined();
   });
 
-  // Exercises the exact shape logSessionAction now uses: a session upsert
-  // with .returning() to get the *actually persisted* row's id (not a
-  // pre-guessed one — see below), then a batch for the optional unit-finish
-  // and note upsert, the note targeting the partial unique index on
-  // notes.sessionId.
-  async function saveSession(date: string, text: string) {
-    const [sessionRow] = await db
-      .insert(sessions)
-      .values({ classId, date, covered: "x", stuck: null, nextOpener: null })
-      .onConflictDoUpdate({
-        target: [sessions.classId, sessions.date],
-        set: { covered: "x", stuck: null, nextOpener: null },
-      })
-      .returning({ id: sessions.id });
-    const sessionId = sessionRow.id;
+  // Exercises the exact shape logSessionAction now uses: session upsert +
+  // note upsert in ONE atomic batch, with the note's sessionId resolved by
+  // a subquery against whatever the session upsert just committed *within
+  // this same transaction* — not a JS value computed (or guessed)
+  // beforehand. This is what lets the whole thing stay one atomic write
+  // (restoring full session+unit+note atomicity, see the regression test
+  // below) while still resolving correctly under two overlapping requests
+  // (see the F8 test below) — an earlier version of this fix traded one
+  // problem for the other by splitting the session upsert out of the
+  // batch; both need to hold at once.
+  function sessionIdSubquery(forClassId: string, forDate: string) {
+    return sql`(select ${sessions.id} from ${sessions} where ${sessions.classId} = ${forClassId} and ${sessions.date} = ${forDate})`;
+  }
 
+  async function saveSession(date: string, text: string) {
     await runAtomically(db, (h) => [
       h
+        .insert(sessions)
+        .values({ classId, date, covered: "x", stuck: null, nextOpener: null })
+        .onConflictDoUpdate({
+          target: [sessions.classId, sessions.date],
+          set: { covered: "x", stuck: null, nextOpener: null },
+        }),
+      h
         .insert(notes)
-        .values({ classId, sessionId, who: "Mei", text })
+        .values({ classId, sessionId: sessionIdSubquery(classId, date), who: "Mei", text })
         .onConflictDoUpdate({
           target: notes.sessionId,
           targetWhere: sql`${notes.sessionId} is not null`,
           set: { who: "Mei", text },
         }),
     ]);
-    return sessionId;
+    const [row] = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(and(eq(sessions.classId, classId), eq(sessions.date, date)));
+    return row.id;
   }
 
   it("upserts a session and its attached note atomically, and re-running updates the note instead of duplicating it (regression: F5, retry duplicated the watch-for note)", async () => {
@@ -132,9 +142,9 @@ describe.skipIf(!databaseUrl)("runAtomically", () => {
   // loser's session upsert lost the conflict (kept the winner's id) but its
   // note insert still targeted the id it had minted itself, which was
   // never actually persisted — a foreign-key violation, a false failure
-  // for an entirely valid concurrent save. Getting the id from
-  // .returning() instead of a pre-read fixes this: both requests always
-  // reference whichever row actually exists after their own upsert.
+  // for an entirely valid concurrent save. The subquery fixes this: both
+  // requests' note inserts resolve against whatever the row actually is
+  // after their own upsert, never a guess.
   it("two overlapping first-time saves for the same class+date both succeed, with exactly one session and one note (regression: F8, false failure on overlapping saves)", async () => {
     const date = "2026-09-23";
     const [idA, idB] = await Promise.all([
@@ -152,5 +162,64 @@ describe.skipIf(!databaseUrl)("runAtomically", () => {
     const noteRows = await db.select().from(notes).where(eq(notes.sessionId, idA));
     expect(noteRows).toHaveLength(1);
     expect(["observation A", "observation B"]).toContain(noteRows[0].text); // whichever won, not both/neither
+  });
+
+  // Regression coverage for Codex's F2-reopened finding (GitHub issue #1):
+  // an earlier version of the F8 fix split the session upsert into its own
+  // statement (to get its id via .returning() before the batch), which
+  // meant a failure in the *note* insert no longer rolled back the
+  // session's own field changes — a failed save silently overwrote real,
+  // previously-saved lesson content while reporting failure. Reproduces
+  // Codex's exact scenario (a real prior session, a failing note insert,
+  // covered/nextOpener changed in the attempted save) without needing a
+  // raw SQL trigger: the note insert's classId deliberately references a
+  // class that doesn't exist, which is just as deterministic a failure
+  // trigger (notes.classId has its own foreign key) and — critically —
+  // is completely independent of the sessionId-subquery mechanism under
+  // test, so this failure has nothing to do with *how* sessionId is
+  // resolved.
+  it("rolls back the session's own field changes (not just the unit) when the note insert fails — a failed save must never silently overwrite real lesson history", async () => {
+    const date = "2026-09-24";
+    await runAtomically(db, (h) => [
+      h
+        .insert(sessions)
+        .values({ classId, date, covered: "Saved coverage", stuck: null, nextOpener: "Saved opener" })
+        .onConflictDoUpdate({
+          target: [sessions.classId, sessions.date],
+          set: { covered: "Saved coverage", stuck: null, nextOpener: "Saved opener" },
+        }),
+    ]);
+
+    const unitId = randomUUID();
+    await db.insert(units).values({ id: unitId, classId, position: 9, title: "Unit to finish", done: false });
+
+    await expect(
+      runAtomically(db, (h) => [
+        h
+          .insert(sessions)
+          .values({ classId, date, covered: "Changed despite failure", stuck: null, nextOpener: "Changed opener" })
+          .onConflictDoUpdate({
+            target: [sessions.classId, sessions.date],
+            set: { covered: "Changed despite failure", stuck: null, nextOpener: "Changed opener" },
+          }),
+        h.update(units).set({ done: true }).where(eq(units.id, unitId)),
+        h.insert(notes).values({
+          classId: "nonexistent-class-id-forces-fk-violation",
+          sessionId: sessionIdSubquery(classId, date),
+          text: "this insert must fail",
+        }),
+      ]),
+    ).rejects.toThrow();
+
+    const sessionRows = await db
+      .select()
+      .from(sessions)
+      .where(and(eq(sessions.classId, classId), eq(sessions.date, date)));
+    expect(sessionRows).toHaveLength(1);
+    expect(sessionRows[0].covered).toBe("Saved coverage"); // NOT overwritten by the failed save
+    expect(sessionRows[0].nextOpener).toBe("Saved opener");
+
+    const unitRows = await db.select().from(units).where(eq(units.id, unitId));
+    expect(unitRows[0].done).toBe(false); // NOT finished either — the whole batch rolled back together
   });
 });

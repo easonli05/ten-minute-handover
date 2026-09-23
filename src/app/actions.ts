@@ -98,46 +98,44 @@ export async function logSessionAction(
   }
 
   try {
-    // The session's id has to be known before the note insert below can
-    // target it. Earlier this read the id with a plain SELECT before
-    // building the batch (reuse the existing row's id, or mint one) — but
-    // under two overlapping first-time saves for the same class+date, both
-    // requests' SELECTs can see "no row yet" and mint *different* ids; the
-    // slower request's session upsert then loses the conflict (the faster
-    // request's row already committed), silently keeping the *faster*
-    // request's id — while the slower request's note insert still targets
-    // the id *it* minted, which was never actually persisted, and fails
-    // its foreign key. A real bug Codex found (GitHub issue #1, F8): the
-    // slower, entirely valid save gets a false failure. Fixed by getting
-    // the id from the upsert's own `.returning()` instead of guessing it
-    // beforehand — this is the actual persisted row's id no matter which
-    // of two overlapping requests won the conflict, so it can't be wrong.
-    // This one statement isn't part of the batch below (it doesn't need to
-    // be: it's already a single atomic INSERT ... ON CONFLICT ... RETURNING,
-    // and it's also idempotent/non-destructive to retry, the same as the
-    // rest of the session-upsert semantics already are elsewhere).
-    const [sessionRow] = await db
-      .insert(sessions)
-      .values({
-        classId,
-        date,
-        covered: covered || null,
-        stuck: stuck || null,
-        nextOpener: nextOpener || null,
-      })
-      .onConflictDoUpdate({
-        target: [sessions.classId, sessions.date],
-        set: {
-          covered: covered || null,
-          stuck: stuck || null,
-          nextOpener: nextOpener || null,
-        },
-      })
-      .returning({ id: sessions.id });
-    const sessionId = sessionRow.id;
-
+    // Session + unit-finish + note-upsert must all land or none do — that's
+    // what F2 was about (Codex, GitHub issue #1): a failed save must never
+    // leave real history silently changed. An earlier version of this fix
+    // pulled the session upsert out of the atomic batch (to get its id via
+    // .returning() before building the note insert, working around "a batch
+    // can't feed one statement's result into another"), fixing a separate
+    // race (F8, below) but *reopening* F2 in the process: if the note
+    // insert failed after that point, the session's own fields had already
+    // committed on their own — a failed save that reports failure while
+    // silently overwriting the previous, real lesson content. Codex caught
+    // this with a live trigger-forced note-insert failure against the
+    // actual action. Both are fixed together now: the note's sessionId is
+    // a subquery, not a JS value, so it doesn't need to be resolved (or
+    // guessed) before the batch — Postgres evaluates it against whatever
+    // the session upsert statement just committed *within this same
+    // transaction*, correctly, whichever of two overlapping requests won
+    // the (classId, date) conflict — and everything stays in one batch, so
+    // a failure anywhere rolls back all of it.
     await runAtomically(db, (h) => {
-      const queries: unknown[] = [];
+      const queries: unknown[] = [
+        h
+          .insert(sessions)
+          .values({
+            classId,
+            date,
+            covered: covered || null,
+            stuck: stuck || null,
+            nextOpener: nextOpener || null,
+          })
+          .onConflictDoUpdate({
+            target: [sessions.classId, sessions.date],
+            set: {
+              covered: covered || null,
+              stuck: stuck || null,
+              nextOpener: nextOpener || null,
+            },
+          }),
+      ];
 
       if (typeof finishUnitId === "string" && finishUnitId) {
         queries.push(
@@ -161,7 +159,11 @@ export async function logSessionAction(
             .insert(notes)
             .values({
               classId,
-              sessionId,
+              // Resolved at execution time, inside this same atomic write,
+              // against whichever row the session upsert above actually
+              // produced — not a value computed beforehand, so it can't be
+              // stale under a race (see the comment above).
+              sessionId: sql`(select ${sessions.id} from ${sessions} where ${sessions.classId} = ${classId} and ${sessions.date} = ${date})`,
               who: watchWho || null,
               text: watchText,
             })

@@ -1064,3 +1064,65 @@ against a real, disposable database) as closely as this project's testing
 architecture allows (see the "no real Neon endpoint" limitation, still
 unchanged, noted throughout this file).
 **Affects:** `src/app/actions.ts` (`logSessionAction`), `src/db/atomic.test.ts`.
+
+## 2026-09-23 — Claude Code — Correction: the F8 fix above reopened F2; both now fixed together
+
+**Decided:** The F8 entry immediately above claimed splitting the session
+upsert out of the atomic batch (to get its id via `.returning()` before
+building the rest) "gives up [atomicity] between the session's own field
+values and the unit+note pair," and judged that acceptable because session
+fields are idempotent to retry. Codex independently retested and proved
+that reasoning wrong with a live repro against the actual action: install
+a trigger that forces the note insert to fail, call `logSessionAction`
+with changed `covered`/`nextOpener` on a class+date that already had a
+real saved session — the action correctly reports failure, but the
+session's fields had *already committed* by then (that statement wasn't
+in the batch that failed), silently overwriting the real, previously-saved
+lesson content. "Idempotent to retry" was answering a question nobody
+asked; the actual property that matters is "a failed save must never
+change what's already on file," and splitting the write into two
+sequential steps broke exactly that, for exactly the case F2 exists to
+prevent.
+
+Fixed by keeping the session upsert, unit-finish, and note-upsert in one
+atomic batch again — restoring what the original F2 fix had — while still
+fixing F8's race, using the correlated-subquery approach this file
+previously considered and passed over for complexity reasons: the note's
+`sessionId` is now `sql`(select ${sessions.id} from ${sessions} where
+${sessions.classId} = ${classId} and ${sessions.date} = ${date})`` — a
+value resolved by Postgres *at execution time, inside the same
+transaction*, against whichever row the session upsert statement (earlier
+in the same batch) actually just committed. This needs no JS-side id at
+all, guessed or returned: it's correct under a race for the same reason
+the rest of a single transaction's statements see each other's effects,
+which this project already relied on once before (the very first version
+of the F2 batch, referencing a session id inserted by an earlier statement
+in the same batch — see the "Correction: neon-http *can* write atomically"
+entry above). The complexity concern that ruled this out originally was
+overstated: it's one `sql` template per reference, not a hand-rolled
+INSERT...SELECT.
+
+**Why this is right, not just passing the specific test**: reasoning
+about a fix's tradeoffs by category ("this only affects idempotent
+fields") is exactly the kind of unverified claim the very first
+correction in this file (2026-09-23, "neon-http *can* write atomically")
+already flagged as the wrong way to reach for this class of guarantee —
+the same lesson applied twice in one day. The fix here removes the
+tradeoff instead of arguing it's acceptable.
+**Verified**: `src/db/atomic.test.ts` has a new test reproducing Codex's
+exact scenario (a real prior session with known `covered`/`nextOpener`, an
+unfinished unit, a forced note-insert failure via a deliberate FK
+violation independent of the sessionId-subquery mechanism) confirming the
+session's fields *and* the unit's `done` state are both unchanged after
+the failed batch — alongside the existing F5 (upsert-not-duplicate) and F8
+(overlapping-saves) tests, all passing together now. Also verified live:
+installed an actual Postgres `BEFORE INSERT` trigger on `notes` that
+raises an exception (mirroring Codex's exact repro technique), drove the
+real running app through a real browser to attempt exactly Codex's
+scenario, and confirmed via `/api/export` that the session's `covered`/
+`nextOpener` and the class's already-attached note were both unchanged
+after the reported failure. A plain, non-forced save was also re-verified
+end-to-end (session + note both save correctly with the new
+subquery-based `sessionId`) to confirm the happy path wasn't broken by
+this change.
+**Affects:** `src/app/actions.ts` (`logSessionAction`), `src/db/atomic.test.ts`.
