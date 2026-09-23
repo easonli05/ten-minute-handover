@@ -6,7 +6,16 @@
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": ".open-next/assets",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    // Default asset URL canonicalization (auto-trailing-slash) 307-redirects
+    // /offline.html to /offline. The service worker's install handler uses
+    // redirect: "manual" and deliberately rejects a redirected shell asset
+    // (see public/sw.js), so it can never precache the offline fallback
+    // under Cloudflare's default asset serving (Codex, GitHub issue #1,
+    // F9). "none" serves .html requests at their literal URL, matching
+    // what the plain Next.js dev/production server already does and what
+    // public/sw.js's SHELL_URLS list expects.
+    "html_handling": "none"
   },
   "observability": {
     "enabled": true

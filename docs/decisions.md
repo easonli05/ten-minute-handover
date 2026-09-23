@@ -1173,3 +1173,62 @@ local Postgres (84 passed, 0 skipped, including the DB-backed
 `.wrangler/` removed from disk afterward — not committed, matching
 `.gitignore`.
 **Affects:** `eslint.config.mjs`.
+
+## 2026-09-23: F9 — Cloudflare asset URL canonicalization broke offline-shell install
+
+**Decided:** Codex found (GitHub issue #1, real Wrangler runtime against
+`35b6d74`) that `GET /offline.html` returns a 307 to `/offline` under
+Cloudflare Workers' static asset serving, and that `public/sw.js`'s
+`install` handler — which deliberately uses `redirect: "manual"` and
+throws on anything that isn't a direct 200, specifically so a shell asset
+silently landing behind a redirect (as happened once before with
+`offline.html` sitting behind auth, see the 2026-09-21 entry) fails the
+install loudly instead of quietly precaching the wrong response — throws
+`Shell asset /offline.html did not return 200 (307)` and never installs
+under Cloudflare at all. This is Cloudflare-specific: the plain Next.js
+dev/production server (and everything both of us had verified `sw.js`
+against so far) serves `/offline.html` directly with no redirect.
+
+Root cause: Cloudflare Workers' asset-serving layer has its own
+`html_handling` option (`wrangler`'s config schema —
+`node_modules/wrangler/config-schema.json`), independent of anything
+Next.js or this project's own code controls, defaulting to canonicalizing
+`.html` URLs to their extensionless form via a redirect (the same
+"auto-trailing-slash"-style behavior Cloudflare Pages has always had for
+static HTML). `wrangler.jsonc`'s `assets` block never set it, so it ran
+on the default.
+
+Fixed by setting `"html_handling": "none"` in `wrangler.jsonc`'s `assets`
+block — serves an `.html` request at its literal URL, matching what
+`public/sw.js`'s `SHELL_URLS` already assumes and what the plain Next
+server already does, with no other behavior change needed on either side.
+Checked this doesn't affect anything else this app serves as a static
+asset: `public/` only contains `offline.html` and `sw.js` (`manifest.webmanifest`
+and `favicon.ico` are Next-generated app routes, not files in `public/`,
+so `html_handling` — which only canonicalizes `.html` URLs — doesn't touch
+them), so the setting is exactly scoped to the one file it needed to fix.
+
+**Why this is right, not just passing the specific test**: this is a
+platform-serving-layer default fighting an intentional safety choice
+already made in `sw.js` (fail loud on a redirected shell asset rather than
+silently cache the wrong thing) — the fix removes the platform behavior
+that was fighting it, rather than loosening the `sw.js` guard to tolerate
+a redirect, which would have reintroduced exactly the silent-wrong-cache
+risk that guard exists to prevent.
+
+**Verified**: reproduced Codex's exact failure first — fresh
+`npx opennextjs-cloudflare build`, `npx wrangler dev --local`, real HTTP
+`GET /offline.html` → 307 to `/offline`, confirmed with `curl --max-redirs 0`.
+Applied the fix, rebuilt, restarted the same local Workers runtime:
+`/offline.html` → clean 200, no redirect. Confirmed the other three
+`SHELL_URLS` entries (`/manifest.webmanifest`, `/favicon.ico`, `/sw.js`)
+and a real app route (`/login`) were unaffected (200 before and after).
+Also ran the actual `public/sw.js` `install` handler in a small VM
+harness with its real `fetch` pointed at the running local Workers
+runtime (mirroring Codex's reproduction technique) — failed with the
+exact error Codex reported before the fix, succeeded cleanly after.
+Then the full check suite: `npm run lint` (clean), `npx tsc --noEmit`
+(clean), `npm test` with `DATABASE_URL` set against local Postgres (84
+passed, 0 skipped), `npm run build` (succeeds). Build artifacts
+(`.open-next/`, `.wrangler/`, `.next/`) removed from disk afterward.
+**Affects:** `wrangler.jsonc`.
