@@ -911,3 +911,62 @@ unchanged. Also confirmed a plain export-then-reimport of that same data
 round-trips successfully (the strengthened validation doesn't reject
 well-formed real exports).
 **Affects:** `src/lib/export-format.ts`, `src/lib/export-format.test.ts`.
+
+## 2026-09-23 — Claude Code — F1 follow-up: Codex's exact repro payloads, and a missing createdAt check
+
+**Decided:** Codex posted (GitHub issue #1) the two exact payloads their
+pressure test used for F1, with more precision than my own reproduction:
+(a) `{classes:[{id:'bad',name:'Missing timestamp'}],units:[],sessions:[],
+notes:[]}`, and (b) a well-formed note referencing a `classId` absent from
+the payload. (b) was already caught by the referential-integrity check
+added in the fix batch above. (a) exposed a real gap: my validator checked
+`days`/`students`/`archived` but never checked `createdAt` was present at
+all — a class (or session, or note) missing it would have passed
+validation, then hit `new Date(undefined)` (silently produces an Invalid
+Date, doesn't throw) when the import route builds its insert, only failing
+once that value reached the database. Given `/api/import` is now atomic
+either way (previous entry), this no longer *loses data* — but it would
+still surface as an opaque DB-layer failure instead of a clear validation
+message, exactly the gap this file's validation exists to close. Added a
+`createdAt` string-type check to all three tables that have the field
+(classes, sessions, notes).
+**Verified:** both of Codex's exact payloads, sent to the real running
+`/api/import` route against the local test Postgres, now return a 400
+before any write is attempted; pre-existing data (3 classes / 6 units / 6
+sessions / 4 notes at the time of this check) was unchanged after each.
+Added both exact payloads as regression tests in
+`src/lib/export-format.test.ts`.
+**Affects:** `src/lib/export-format.ts`, `src/lib/export-format.test.ts`.
+
+## 2026-09-23 — Claude Code — F7: login's `from` redirect was an open redirect
+
+**Decided:** Codex found (GitHub issue #1, confirmed via real local HTTP,
+not just source review) that `POST /api/login`'s `from` field accepted
+`//example.invalid/after-login` and redirected there after a successful
+login — `from.startsWith("/")` is true for a protocol-relative URL too,
+and `new URL(redirectTo, request.url)` resolves `//host/path` to that
+*other* host, keeping only the scheme from the base. Fixed with
+`src/lib/safe-redirect.ts`'s `safeRedirectPath(from, origin)`: resolves
+`from` against the app's own origin using the platform's URL parser and
+only accepts the result if its `.origin` still matches — rejecting
+anything that resolves elsewhere, however it's spelled, rather than
+pattern-matching known bypass strings.
+**Why resolve-and-compare instead of stricter string checks:** Codex's
+report also flagged backslash variants (`/\example.invalid/...`) as a
+likely second bypass, since the WHATWG URL spec normalizes backslashes to
+forward slashes for http(s) *before* parsing — so a stricter
+`from.startsWith("/") && !from.startsWith("//")` check would still miss
+that one. Enumerating denylist patterns is exactly the shape of mistake
+`sw.js`'s F6 fix (same issue thread) moved away from for the same reason:
+the next bypass shape is always one the list doesn't have yet. Resolving
+against the real origin and checking `.origin` equality asks the actual
+question ("does this end up somewhere else") using the browser's own URL
+semantics, so it's correct for any bypass encoding without needing to
+know about it in advance.
+**Verified live**, real running `/api/login` route against the local test
+Postgres: Codex's exact repro (`from=//example.invalid/after-login`) now
+redirects to `/`; the backslash variant does too; a legitimate same-origin
+`from` (`/class/example-class`) still redirects correctly; no `from` at
+all still defaults to `/`.
+**Affects:** `src/lib/safe-redirect.ts` (new), `src/lib/safe-redirect.test.ts`
+(new), `src/app/api/login/route.ts`.

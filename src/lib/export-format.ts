@@ -124,11 +124,12 @@ export function validateExportPayload(payload: unknown): ValidationResult {
       typeof row.name !== "string" ||
       !isStringArray(row.days) ||
       !isStringArray(row.students) ||
-      typeof row.archived !== "boolean"
+      typeof row.archived !== "boolean" ||
+      typeof row.createdAt !== "string"
     ) {
       return {
         ok: false,
-        error: "Every class needs an id, name, days[]/students[] as string arrays, and an archived boolean.",
+        error: "Every class needs an id, name, days[]/students[] as string arrays, an archived boolean, and a createdAt string.",
       };
     }
   }
@@ -147,8 +148,13 @@ export function validateExportPayload(payload: unknown): ValidationResult {
     }
   }
   for (const row of sessions) {
-    if (!hasStringId(row) || typeof row.classId !== "string" || typeof row.date !== "string") {
-      return { ok: false, error: "Every session needs an id, classId, and date." };
+    if (
+      !hasStringId(row) ||
+      typeof row.classId !== "string" ||
+      typeof row.date !== "string" ||
+      typeof row.createdAt !== "string"
+    ) {
+      return { ok: false, error: "Every session needs an id, classId, date, and createdAt string." };
     }
     if (!classIds.has(row.classId)) {
       return { ok: false, error: `Session "${row.id}" references classId "${row.classId}", which isn't in this payload's classes.` };
@@ -160,9 +166,13 @@ export function validateExportPayload(payload: unknown): ValidationResult {
       typeof row.classId !== "string" ||
       typeof row.text !== "string" ||
       typeof row.done !== "boolean" ||
+      typeof row.createdAt !== "string" ||
       (row.sessionId !== undefined && row.sessionId !== null && typeof row.sessionId !== "string")
     ) {
-      return { ok: false, error: "Every note needs an id, classId, text, done boolean, and sessionId that's a string or null." };
+      return {
+        ok: false,
+        error: "Every note needs an id, classId, text, done boolean, createdAt string, and sessionId that's a string or null.",
+      };
     }
     if (!classIds.has(row.classId)) {
       return { ok: false, error: `Note "${row.id}" references classId "${row.classId}", which isn't in this payload's classes.` };

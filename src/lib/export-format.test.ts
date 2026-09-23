@@ -154,5 +154,39 @@ describe("validateExportPayload", () => {
       expect(validateExportPayload({ ...validPayload, units: [{ ...validPayload.units[0], done: "false" }] }).ok).toBe(false);
       expect(validateExportPayload({ ...validPayload, notes: [{ ...validPayload.notes[0], done: "false" }] }).ok).toBe(false);
     });
+
+    it("rejects a class/session/note missing createdAt", () => {
+      expect(validateExportPayload({ ...validPayload, classes: [{ ...validPayload.classes[0], createdAt: undefined }] }).ok).toBe(false);
+      expect(validateExportPayload({ ...validPayload, sessions: [{ ...validPayload.sessions[0], createdAt: undefined }] }).ok).toBe(false);
+      expect(validateExportPayload({ ...validPayload, notes: [{ ...validPayload.notes[0], createdAt: undefined }] }).ok).toBe(false);
+    });
+
+    // Codex's exact reported repro case (GitHub issue #1): a class missing
+    // several required fields, including createdAt — under the pre-fix
+    // validator this passed shape checking (it has an id and a name) and
+    // only failed once `new Date(undefined)` reached the database as part
+    // of the (then non-atomic) insert, after the existing data was already
+    // deleted.
+    it("rejects Codex's exact F1 repro payload (a class with only id+name, missing createdAt and every other required field)", () => {
+      const result = validateExportPayload({
+        classes: [{ id: "bad", name: "Missing timestamp" }],
+        units: [],
+        sessions: [],
+        notes: [],
+      });
+      expect(result.ok).toBe(false);
+    });
+
+    // Codex's other exact F1 repro: an otherwise well-formed payload whose
+    // note references a class that isn't actually in the payload.
+    it("rejects Codex's exact F1 repro payload (a well-formed note referencing a class absent from the payload)", () => {
+      const result = validateExportPayload({
+        classes: [],
+        units: [],
+        sessions: [],
+        notes: [{ id: "n1", classId: "missing-class", who: null, text: "x", done: false, createdAt: "2026-09-22T00:00:00.000Z" }],
+      });
+      expect(result.ok).toBe(false);
+    });
   });
 });

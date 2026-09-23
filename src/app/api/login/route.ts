@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { AUTH_COOKIE, AUTH_COOKIE_MAX_AGE_SECONDS } from "@/lib/auth";
+import { safeRedirectPath } from "@/lib/safe-redirect";
 
 export async function POST(request: Request) {
   const formData = await request.formData();
@@ -22,6 +23,6 @@ export async function POST(request: Request) {
   });
 
   const from = formData.get("from");
-  const redirectTo = typeof from === "string" && from.startsWith("/") ? from : "/";
+  const redirectTo = safeRedirectPath(from, new URL(request.url).origin);
   return NextResponse.redirect(new URL(redirectTo, request.url), { status: 303 });
 }
