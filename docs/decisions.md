@@ -1126,3 +1126,50 @@ end-to-end (session + note both save correctly with the new
 subquery-based `sessionId`) to confirm the happy path wasn't broken by
 this change.
 **Affects:** `src/app/actions.ts` (`logSessionAction`), `src/db/atomic.test.ts`.
+
+## 2026-09-23: ESLint ignores must list Cloudflare/OpenNext build output explicitly
+
+**Decided:** `eslint.config.mjs` uses `globalIgnores([...])` to restate
+`eslint-config-next`'s default ignore list (`.next/**`, `out/**`,
+`build/**`, `next-env.d.ts`) — per that config API, a `globalIgnores` call
+*replaces* the preset's own ignores rather than adding to them, so
+anything not repeated here is linted. Codex reported (GitHub issue #1,
+verification of ae6a71d) that a plain `npm run lint` fails with ~540
+errors once `.open-next/` exists on disk from a Cloudflare build (`npm run
+cf:preview` / `cf:deploy`, added in the "Switch deploy target from Vercel
+to Cloudflare Workers" work) — ESLint was linting OpenNext's generated,
+non-source bundle output (`worker.js`, `server-functions/default/*.mjs`,
+etc.) as if it were project code. Confirmed by reproducing locally:
+`npx opennextjs-cloudflare build` regenerates `.open-next/`, and
+`npm run lint` failed with 540 errors/16531 warnings against it before
+this fix, passed with zero output after.
+
+Fixed by adding `.open-next/**` and `.wrangler/**` (the other
+Cloudflare/OpenNext build-output directory, both already in `.gitignore`)
+to the restated ignore list, alongside the existing four entries — not by
+switching to an "extend, don't replace" pattern, since that would be a
+larger change than the one-line gap Codex actually found, and the existing
+four entries are already correct for this project's build outputs.
+
+**Why this is right, not just passing the specific test**: this is a
+tooling/lint-reproducibility issue, not a runtime or data-safety one — it
+never touched what the app does, only what a contributor's plain `npm run
+lint` reports after building for Cloudflare. Codex explicitly flagged it
+as "a tooling issue, not a demonstrated runtime blocker." No behavior
+change; verified the fix doesn't hide anything else by running the same
+build-then-lint reproduction with and without the fix and confirming the
+error set is entirely `.open-next/` generated-code findings (unused vars,
+`@ts-ignore`, `require()` imports in bundled bootstrap code) with nothing
+from `src/`.
+
+**Verified**: reproduced Codex's exact failure (`npx opennextjs-cloudflare
+build` then `npm run lint` without the fix → 540 errors, all inside
+`.open-next/`), then confirmed the fix resolves it (same build output,
+`npm run lint` with the fix → clean, no output). Also ran the full check
+suite after cleaning up the build artifacts: `npm run lint` (clean),
+`npx tsc --noEmit` (clean), `npm test` with `DATABASE_URL` set against
+local Postgres (84 passed, 0 skipped, including the DB-backed
+`atomic.test.ts` suite), `npm run build` (succeeds). `.open-next/` and
+`.wrangler/` removed from disk afterward — not committed, matching
+`.gitignore`.
+**Affects:** `eslint.config.mjs`.

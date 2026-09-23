@@ -12,6 +12,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Cloudflare/OpenNext build output (see wrangler.jsonc, open-next.config.ts) —
+    // not part of eslint-config-next's own defaults, so it must be listed here too
+    // or a plain `npm run lint` fails on generated code after a Cloudflare build
+    // (Codex, GitHub issue #1).
+    ".open-next/**",
+    ".wrangler/**",
   ]),
 ]);
 
