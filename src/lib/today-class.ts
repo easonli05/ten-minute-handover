@@ -4,6 +4,11 @@ import { todayAbbreviation, todayISO } from "@/lib/date";
 export type TodayClass = {
   class: typeof classes.$inferSelect;
   latestSession: typeof sessions.$inferSelect | null;
+  // The latest session's attached "watch for next time" note (see
+  // notes.sessionId in src/db/schema.ts), if any — independent of
+  // openNotes' done filter, since this exists to show what's already on
+  // file when reopening the log sheet, not to list what's still open.
+  latestSessionNote: { who: string | null; text: string } | null;
   loggedToday: boolean;
   meetsToday: boolean;
   unit: {
@@ -28,6 +33,7 @@ export function toTodayClass(
   classSessions: (typeof sessions.$inferSelect)[],
   classUnits: (typeof units.$inferSelect)[],
   openNoteRows: (typeof notes.$inferSelect)[],
+  latestSessionNote: { who: string | null; text: string } | null = null,
 ): TodayClass {
   const today = todayAbbreviation();
   const todayDate = todayISO();
@@ -36,6 +42,7 @@ export function toTodayClass(
   return {
     class: cls,
     latestSession,
+    latestSessionNote,
     loggedToday: latestSession?.date === todayDate,
     meetsToday: cls.days.includes(today),
     unit: {

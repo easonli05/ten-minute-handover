@@ -98,41 +98,46 @@ export async function logSessionAction(
   }
 
   try {
-    // The session's id has to be known *before* building the atomic batch
-    // below (batched queries can't feed one statement's result into
-    // another — see src/db/atomic.ts), so it's resolved with a plain read
-    // first: reuse the existing row's id if this class+date is already
-    // logged, or mint a new one if not. Either way this is the same id the
-    // upsert below will end up with, so the attached note (if any) can
-    // target it directly in the same atomic write.
-    const existing = await db
-      .select({ id: sessions.id })
-      .from(sessions)
-      .where(and(eq(sessions.classId, classId), eq(sessions.date, date)))
-      .limit(1);
-    const sessionId = existing[0]?.id ?? crypto.randomUUID();
+    // The session's id has to be known before the note insert below can
+    // target it. Earlier this read the id with a plain SELECT before
+    // building the batch (reuse the existing row's id, or mint one) — but
+    // under two overlapping first-time saves for the same class+date, both
+    // requests' SELECTs can see "no row yet" and mint *different* ids; the
+    // slower request's session upsert then loses the conflict (the faster
+    // request's row already committed), silently keeping the *faster*
+    // request's id — while the slower request's note insert still targets
+    // the id *it* minted, which was never actually persisted, and fails
+    // its foreign key. A real bug Codex found (GitHub issue #1, F8): the
+    // slower, entirely valid save gets a false failure. Fixed by getting
+    // the id from the upsert's own `.returning()` instead of guessing it
+    // beforehand — this is the actual persisted row's id no matter which
+    // of two overlapping requests won the conflict, so it can't be wrong.
+    // This one statement isn't part of the batch below (it doesn't need to
+    // be: it's already a single atomic INSERT ... ON CONFLICT ... RETURNING,
+    // and it's also idempotent/non-destructive to retry, the same as the
+    // rest of the session-upsert semantics already are elsewhere).
+    const [sessionRow] = await db
+      .insert(sessions)
+      .values({
+        classId,
+        date,
+        covered: covered || null,
+        stuck: stuck || null,
+        nextOpener: nextOpener || null,
+      })
+      .onConflictDoUpdate({
+        target: [sessions.classId, sessions.date],
+        set: {
+          covered: covered || null,
+          stuck: stuck || null,
+          nextOpener: nextOpener || null,
+        },
+      })
+      .returning({ id: sessions.id });
+    const sessionId = sessionRow.id;
 
     await runAtomically(db, (h) => {
-      const queries: unknown[] = [
-        h
-          .insert(sessions)
-          .values({
-            id: sessionId,
-            classId,
-            date,
-            covered: covered || null,
-            stuck: stuck || null,
-            nextOpener: nextOpener || null,
-          })
-          .onConflictDoUpdate({
-            target: [sessions.classId, sessions.date],
-            set: {
-              covered: covered || null,
-              stuck: stuck || null,
-              nextOpener: nextOpener || null,
-            },
-          }),
-      ];
+      const queries: unknown[] = [];
 
       if (typeof finishUnitId === "string" && finishUnitId) {
         queries.push(

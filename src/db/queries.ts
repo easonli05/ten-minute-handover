@@ -24,7 +24,26 @@ async function loadClassParts(classId: string) {
       .where(and(eq(notes.classId, classId), eq(notes.done, false)))
       .orderBy(desc(notes.createdAt)),
   ]);
-  return { classSessions, classUnits, openNoteRows };
+
+  // The most recent session's attached watch-for note (if any), regardless
+  // of done/not-done — deliberately *not* filtered like openNoteRows above,
+  // since this exists so the log sheet can show what's already attached
+  // when reopening, not to decide what's still "open." Without this, the
+  // log sheet's initial open (not just a later date switch) showed a blank
+  // field even when a note was already attached, so typing into it and
+  // saving silently replaced the original text — a real bug Codex found
+  // independently (GitHub issue #1, F5 follow-up). See docs/decisions.md.
+  const latestSessionId = classSessions[0]?.id;
+  const latestSessionNoteRows = latestSessionId
+    ? await db
+        .select({ who: notes.who, text: notes.text })
+        .from(notes)
+        .where(eq(notes.sessionId, latestSessionId))
+        .limit(1)
+    : [];
+  const latestSessionNote = latestSessionNoteRows[0] ?? null;
+
+  return { classSessions, classUnits, openNoteRows, latestSessionNote };
 }
 
 // N+1 per class is fine here — a single teacher has a handful of classes,
@@ -37,10 +56,15 @@ export async function getTodayData(): Promise<TodayClass[]> {
 
   const withData = await Promise.all(
     allClasses.map(async (cls) => {
-      const { classSessions, classUnits, openNoteRows } = await loadClassParts(
-        cls.id,
+      const { classSessions, classUnits, openNoteRows, latestSessionNote } =
+        await loadClassParts(cls.id);
+      return toTodayClass(
+        cls,
+        classSessions,
+        classUnits,
+        openNoteRows,
+        latestSessionNote,
       );
-      return toTodayClass(cls, classSessions, classUnits, openNoteRows);
     }),
   );
 
@@ -71,12 +95,17 @@ export async function getClassDetail(
     .limit(1);
   if (!cls) return null;
 
-  const { classSessions, classUnits, openNoteRows } = await loadClassParts(
-    classId,
-  );
+  const { classSessions, classUnits, openNoteRows, latestSessionNote } =
+    await loadClassParts(classId);
 
   return {
-    today: toTodayClass(cls, classSessions, classUnits, openNoteRows),
+    today: toTodayClass(
+      cls,
+      classSessions,
+      classUnits,
+      openNoteRows,
+      latestSessionNote,
+    ),
     units: classUnits,
     sessions: classSessions,
   };

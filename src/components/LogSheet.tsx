@@ -29,13 +29,13 @@ export function LogSheet({
   data: TodayClass;
   onClose: () => void;
 }) {
-  const { class: cls, latestSession, loggedToday, unit } = data;
+  const { class: cls, latestSession, latestSessionNote, loggedToday, unit } = data;
   const [state, setState] = useState<LogSessionState>(initialState);
   const [pending, startSubmit] = useTransition();
 
   const [date, setDate] = useState(() => todayISO());
   const initialFields = useState(() =>
-    deriveInitialFormValues({ loggedToday, latestSession }),
+    deriveInitialFormValues({ loggedToday, latestSession, latestSessionNote }),
   )[0];
   const [covered, setCovered] = useState(initialFields.covered);
   const [stuck, setStuck] = useState(initialFields.stuck);
@@ -68,17 +68,18 @@ export function LogSheet({
 
     // The date the drawer opened with already has its data in hand — no
     // round trip needed, and it avoids a flash-to-blank while it resolves.
-    // The attached watch-for note isn't part of that in-hand data (see
-    // getSessionForDateAction), so it resets to blank here same as on
-    // first mount — an accepted gap, not silent data loss, since a blank
-    // watchText on save leaves any already-attached note untouched rather
-    // than overwriting it.
+    // TodayClass.latestSessionNote (see src/db/queries.ts) carries the
+    // attached watch-for note too now, so this fast path can show it
+    // without a round trip, the same as the other three fields — it used
+    // to reset these two to blank here, which made an already-attached
+    // note invisible on the ordinary "return to today" flow, not just an
+    // unusual case (see docs/decisions.md).
     if (newDate === todayISO() && loggedToday && latestSession) {
       setCovered(latestSession.covered ?? "");
       setStuck(latestSession.stuck ?? "");
       setNextOpener(latestSession.nextOpener ?? "");
-      setWatchWho("");
-      setWatchText("");
+      setWatchWho(latestSessionNote?.who ?? "");
+      setWatchText(latestSessionNote?.text ?? "");
       return;
     }
 

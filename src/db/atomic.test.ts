@@ -84,39 +84,39 @@ describe.skipIf(!databaseUrl)("runAtomically", () => {
   });
 
   // Exercises the exact shape logSessionAction now uses: a session upsert
-  // plus a note upsert targeting the partial unique index on
-  // notes.sessionId, in the same atomic write, with the session's id
-  // resolved up front (see actions.ts's comment on why — batched queries
-  // can't feed one statement's result into another).
-  it("upserts a session and its attached note atomically, and re-running with the same sessionId updates the note instead of duplicating it (regression: F5, retry duplicated the watch-for note)", async () => {
+  // with .returning() to get the *actually persisted* row's id (not a
+  // pre-guessed one — see below), then a batch for the optional unit-finish
+  // and note upsert, the note targeting the partial unique index on
+  // notes.sessionId.
+  async function saveSession(date: string, text: string) {
+    const [sessionRow] = await db
+      .insert(sessions)
+      .values({ classId, date, covered: "x", stuck: null, nextOpener: null })
+      .onConflictDoUpdate({
+        target: [sessions.classId, sessions.date],
+        set: { covered: "x", stuck: null, nextOpener: null },
+      })
+      .returning({ id: sessions.id });
+    const sessionId = sessionRow.id;
+
+    await runAtomically(db, (h) => [
+      h
+        .insert(notes)
+        .values({ classId, sessionId, who: "Mei", text })
+        .onConflictDoUpdate({
+          target: notes.sessionId,
+          targetWhere: sql`${notes.sessionId} is not null`,
+          set: { who: "Mei", text },
+        }),
+    ]);
+    return sessionId;
+  }
+
+  it("upserts a session and its attached note atomically, and re-running updates the note instead of duplicating it (regression: F5, retry duplicated the watch-for note)", async () => {
     const date = "2026-09-22";
-    const existing = await db
-      .select({ id: sessions.id })
-      .from(sessions)
-      .where(and(eq(sessions.classId, classId), eq(sessions.date, date)));
-    const sessionId = existing[0]?.id ?? randomUUID();
-
-    const save = (text: string) =>
-      runAtomically(db, (h) => [
-        h
-          .insert(sessions)
-          .values({ id: sessionId, classId, date, covered: "x", stuck: null, nextOpener: null })
-          .onConflictDoUpdate({
-            target: [sessions.classId, sessions.date],
-            set: { covered: "x", stuck: null, nextOpener: null },
-          }),
-        h
-          .insert(notes)
-          .values({ classId, sessionId, who: "Mei", text })
-          .onConflictDoUpdate({
-            target: notes.sessionId,
-            targetWhere: sql`${notes.sessionId} is not null`,
-            set: { who: "Mei", text },
-          }),
-      ]);
-
-    await save("first attempt");
-    await save("retry after an apparent failure"); // same sessionId — must update, not duplicate
+    const sessionId = await saveSession(date, "first attempt");
+    const sessionId2 = await saveSession(date, "retry after an apparent failure");
+    expect(sessionId2).toBe(sessionId); // same row, not a second one
 
     const attached = await db.select().from(notes).where(eq(notes.sessionId, sessionId));
     expect(attached).toHaveLength(1);
@@ -124,5 +124,33 @@ describe.skipIf(!databaseUrl)("runAtomically", () => {
 
     const sessionRows = await db.select().from(sessions).where(eq(sessions.id, sessionId));
     expect(sessionRows).toHaveLength(1);
+  });
+
+  // Regression coverage for Codex's F8 finding (GitHub issue #1): two
+  // overlapping requests both saving the *first* session for the same
+  // class+date used to each read "no row yet" and mint different ids; the
+  // loser's session upsert lost the conflict (kept the winner's id) but its
+  // note insert still targeted the id it had minted itself, which was
+  // never actually persisted — a foreign-key violation, a false failure
+  // for an entirely valid concurrent save. Getting the id from
+  // .returning() instead of a pre-read fixes this: both requests always
+  // reference whichever row actually exists after their own upsert.
+  it("two overlapping first-time saves for the same class+date both succeed, with exactly one session and one note (regression: F8, false failure on overlapping saves)", async () => {
+    const date = "2026-09-23";
+    const [idA, idB] = await Promise.all([
+      saveSession(date, "observation A"),
+      saveSession(date, "observation B"),
+    ]);
+    expect(idA).toBe(idB); // both resolved to the same actual row
+
+    const sessionRows = await db
+      .select()
+      .from(sessions)
+      .where(and(eq(sessions.classId, classId), eq(sessions.date, date)));
+    expect(sessionRows).toHaveLength(1);
+
+    const noteRows = await db.select().from(notes).where(eq(notes.sessionId, idA));
+    expect(noteRows).toHaveLength(1);
+    expect(["observation A", "observation B"]).toContain(noteRows[0].text); // whichever won, not both/neither
   });
 });

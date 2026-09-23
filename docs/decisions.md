@@ -970,3 +970,97 @@ redirects to `/`; the backslash variant does too; a legitimate same-origin
 all still defaults to `/`.
 **Affects:** `src/lib/safe-redirect.ts` (new), `src/lib/safe-redirect.test.ts`
 (new), `src/app/api/login/route.ts`.
+
+## 2026-09-23 — Claude Code — Correction: F5's "accepted gap" was the ordinary reopen flow, not an edge case
+
+**Decided:** Codex's independent retest of `0b1033f` found that the
+previous F5 fix's "accepted, documented gap" (watch-for fields don't
+prefill when returning to an already-logged today) was scoped too
+narrowly. `deriveInitialFormValues` runs on **every mount**, and it never
+had the attached note to begin with — so the gap wasn't just "switching
+dates away from and back to today," it was the plain, ordinary case of
+opening the log sheet for a class already logged today with a note
+attached. The field looked empty; typing a new observation into it and
+saving replaced the original via the upsert, which is real, silent data
+loss — worse than the original entry characterized it ("not a data-loss
+risk... blank never deletes"), since that's only true if the field is
+*left* blank, not if the user engages with an apparently-empty field.
+
+Fixed at the root instead of patching the client further: `TodayClass`
+(via `loadClassParts` in `src/db/queries.ts`) now carries
+`latestSessionNote` — the most recent session's attached note, looked up
+by `sessionId`, independent of the `openNotes` done-filter (a ticked-off
+attached note still needs to be visible here; this field isn't about
+what's still "open," it's about what's already on file). `LogSheet.tsx`
+now has this synchronously on mount, same as the other three fields, so no
+new loading state or round trip was needed — the "fast path avoids a
+round trip for today" design that caused the original gap stays intact,
+it just has correct data to work with now. The "return to today"
+date-change branch was fixed the same way.
+**Why this needed a schema-adjacent fix, not just a client patch:** an
+async on-mount fetch (call `getSessionForDateAction` on open too, not just
+on date change) would have worked, but adds a loading/error state to get
+right for a value that's already computed once per class on every
+Today-screen load anyway — carrying it through `TodayClass` is one extra
+per-class query (already doing N+1 here, per the existing comment) against
+a whole new client-side race to reason about.
+**Verified live**, real dev server against local Postgres + a transient
+Playwright session (same technique as prior passes): logged today's class
+with a watch-for note; full page reload (not just closing the modal —
+this is what makes it the ordinary flow, not carried-over client state);
+reopened the log sheet; confirmed both watch-for fields were already
+filled with the original values; edited only the `covered` field and
+resaved; confirmed the original note text survived unchanged (one note,
+not lost, not duplicated).
+**Affects:** `src/db/queries.ts` (`loadClassParts`, `getTodayData`,
+`getClassDetail`), `src/lib/today-class.ts` (`TodayClass.latestSessionNote`),
+`src/lib/log-sheet-form.ts`, `src/lib/log-sheet-form.test.ts`,
+`src/components/LogSheet.tsx`, `src/lib/class-picker.test.ts` (stub updated
+for the new required field).
+
+## 2026-09-23 — Claude Code — F8: overlapping first-time saves could false-fail on a foreign-key race
+
+**Decided:** Codex found a real race in the F2 atomicity fix itself:
+`logSessionAction` resolved the session's id with a plain `SELECT` before
+building the atomic batch (needed because a batch can't feed one
+statement's result into another — see the "Correction" entry above). Under
+two overlapping requests saving the *first* session for the same
+class+date, both `SELECT`s can see "no row yet" and each mints its own
+id. The slower request's session upsert then loses the `(classId, date)`
+conflict — Postgres keeps the faster request's row and id — but the
+slower request's note insert still targets the id *it* minted, which was
+never actually persisted, violating the `notes_session_id_sessions_id_fk`
+foreign key. The atomic batch correctly rolls back (no corruption), but
+the slower request's user sees a false "couldn't save" for an entirely
+valid concurrent save.
+
+Fixed by not guessing the id at all: the session upsert now uses
+`.returning({ id: sessions.id })` directly, in its own statement (an
+`INSERT ... ON CONFLICT ... RETURNING` is already atomic on its own, and
+already idempotent to retry, the same as the rest of the session-upsert
+semantics), and that returned id — the actually-persisted row's, whichever
+request won the conflict — is what the subsequent batch (unit-finish,
+note-upsert) uses. This removes the separate pre-read entirely rather than
+adding another one; both concurrent requests now correctly resolve to the
+same row.
+**Why not a correlated subquery instead** (resolving the note's
+`session_id` via `SELECT id FROM sessions WHERE ...` inside the same
+batched insert, so the whole thing stays one atomic write): considered it,
+but it pushes real complexity into a raw SQL fragment mixed with Drizzle's
+typed query builder for uncertain benefit — splitting into "one atomic
+upsert-with-returning" followed by "one atomic batch using its result" is
+easier to read and verify, and the only thing it gives up is atomicity
+between the session's own field values and the unit+note pair, which
+matters less: the session fields are idempotent/non-destructive to retry
+(unlike the unit+note pair, which is exactly what F2 was about — "unit
+finished but note not saved" can no longer happen, since those two are
+still batched together).
+**Verified**: `src/db/atomic.test.ts` now has a `Promise.all` of two
+concurrent first-time saves for the same fresh class+date, each with a
+different attached note, confirming both succeed and resolve to the same
+session id with exactly one note — mirroring Codex's own PGlite
+reproduction technique (`Promise.all` of two action-equivalent calls
+against a real, disposable database) as closely as this project's testing
+architecture allows (see the "no real Neon endpoint" limitation, still
+unchanged, noted throughout this file).
+**Affects:** `src/app/actions.ts` (`logSessionAction`), `src/db/atomic.test.ts`.

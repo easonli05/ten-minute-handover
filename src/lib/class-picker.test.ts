@@ -15,6 +15,7 @@ function stubClass(id: string, meetsToday: boolean): TodayClass {
       createdAt: new Date(),
     },
     latestSession: null,
+    latestSessionNote: null,
     loggedToday: false,
     meetsToday,
     unit: { current: null, doneCount: 0, total: 0 },

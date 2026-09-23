@@ -13,6 +13,7 @@ describe("deriveInitialFormValues", () => {
         stuck: "articles",
         nextOpener: "Articles warm-up",
       },
+      latestSessionNote: null,
     });
     expect(result).toEqual({
       covered: "Reviewed present simple",
@@ -23,10 +24,26 @@ describe("deriveInitialFormValues", () => {
     });
   });
 
+  // Regression coverage for Codex's F5 follow-up (GitHub issue #1): an
+  // attached note must be visible on the *ordinary* reopen of an
+  // already-logged today, not just when switching dates — otherwise
+  // typing into the apparently-empty field and saving silently replaces
+  // the original note via the upsert in logSessionAction.
+  it("prefills the attached watch-for note when today is already logged and one exists", () => {
+    const result = deriveInitialFormValues({
+      loggedToday: true,
+      latestSession: { covered: "x", stuck: null, nextOpener: null },
+      latestSessionNote: { who: "Mei", text: "keeps dropping third-person -s" },
+    });
+    expect(result.watchWho).toBe("Mei");
+    expect(result.watchText).toBe("keeps dropping third-person -s");
+  });
+
   it("turns stored nulls into empty strings, not the literal word 'null'", () => {
     const result = deriveInitialFormValues({
       loggedToday: true,
       latestSession: { covered: null, stuck: null, nextOpener: "Opener only" },
+      latestSessionNote: null,
     });
     expect(result).toEqual({
       covered: "",
@@ -45,6 +62,7 @@ describe("deriveInitialFormValues", () => {
         stuck: "tense choice",
         nextOpener: "Should not leak into a fresh log",
       },
+      latestSessionNote: { who: "Someone", text: "Should not leak either" },
     });
     expect(result).toEqual({
       covered: "",
@@ -57,7 +75,7 @@ describe("deriveInitialFormValues", () => {
 
   it("starts blank when there has never been a session", () => {
     expect(
-      deriveInitialFormValues({ loggedToday: false, latestSession: null }),
+      deriveInitialFormValues({ loggedToday: false, latestSession: null, latestSessionNote: null }),
     ).toEqual({ covered: "", stuck: "", nextOpener: "", watchWho: "", watchText: "" });
   });
 });
