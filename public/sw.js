@@ -10,7 +10,7 @@
 // Bumping SHELL_CACHE's version below purges any previously cached
 // data-bearing responses from earlier versions of this file — the
 // `activate` handler deletes every cache that isn't the current name.
-const SHELL_CACHE = "tmh-shell-v2";
+const SHELL_CACHE = "tmh-shell-v3";
 const OFFLINE_URL = "/offline.html";
 const SHELL_URLS = [OFFLINE_URL, "/manifest.webmanifest", "/favicon.ico"];
 
@@ -53,6 +53,21 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+// Next.js App Router client-side navigation (a <Link> tap, router.push, or
+// its own background prefetching) doesn't do a full-page navigation — it
+// fetches the target page as an RSC payload instead, carrying the exact
+// same class data a full reload would. That fetch's request.mode is
+// "cors"/"same-origin", never "navigate", so the branch below alone always
+// missed it: it fell through to the generic cache-first handler and got
+// treated like a static asset, which is how a soft-navigated page could
+// show stale data even though a full reload of the same URL was always
+// correctly network-only. Next marks every one of these fetches with one
+// of these headers (see node_modules/next/dist/client/components/
+// app-router-headers.js) — checking for them, rather than trying to
+// enumerate every page route here, is what makes this hold for routes
+// added later too.
+const NEXT_DATA_REQUEST_HEADERS = ["rsc", "next-router-state-tree", "next-router-prefetch", "next-url"];
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
@@ -72,10 +87,23 @@ self.addEventListener("fetch", (event) => {
   // app's own error handling (not the service worker) deals with it.
   if (url.pathname.startsWith("/api/")) return;
 
-  // Everything left is static build output (JS/CSS/fonts, content-hashed by
-  // Next) or the shell files above — safe to cache-first with a background
-  // refresh, since they either never change post-deploy or are harmless to
-  // show one version stale for a moment.
+  // Client-side navigation/prefetch fetches for page data — see above.
+  // Also network-only, same reasoning as a full navigation: these can
+  // carry class data, so they must never be served from cache.
+  if (NEXT_DATA_REQUEST_HEADERS.some((h) => request.headers.has(h))) return;
+
+  // Everything else is allowlisted, not denylisted: only Next's
+  // content-hashed static build output and the explicit shell files above
+  // are safe to cache-first (they either never change post-deploy or are
+  // harmless to show one version stale for a moment). Anything not
+  // recognized falls through to the network uncached rather than being
+  // assumed safe — the previous version of this file assumed "not a
+  // navigation and not /api/" meant "safe to cache," which is exactly the
+  // assumption the RSC-fetch case above proved wrong.
+  const isKnownStaticAsset =
+    url.pathname.startsWith("/_next/static/") || SHELL_URLS.includes(url.pathname);
+  if (!isKnownStaticAsset) return;
+
   event.respondWith(
     caches.match(request).then((cached) => {
       const network = fetch(request)

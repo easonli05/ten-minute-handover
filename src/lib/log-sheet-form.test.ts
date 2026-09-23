@@ -18,6 +18,8 @@ describe("deriveInitialFormValues", () => {
       covered: "Reviewed present simple",
       stuck: "articles",
       nextOpener: "Articles warm-up",
+      watchWho: "",
+      watchText: "",
     });
   });
 
@@ -26,7 +28,13 @@ describe("deriveInitialFormValues", () => {
       loggedToday: true,
       latestSession: { covered: null, stuck: null, nextOpener: "Opener only" },
     });
-    expect(result).toEqual({ covered: "", stuck: "", nextOpener: "Opener only" });
+    expect(result).toEqual({
+      covered: "",
+      stuck: "",
+      nextOpener: "Opener only",
+      watchWho: "",
+      watchText: "",
+    });
   });
 
   it("starts blank when today has not been logged yet, even if a past session exists", () => {
@@ -38,27 +46,41 @@ describe("deriveInitialFormValues", () => {
         nextOpener: "Should not leak into a fresh log",
       },
     });
-    expect(result).toEqual({ covered: "", stuck: "", nextOpener: "" });
+    expect(result).toEqual({
+      covered: "",
+      stuck: "",
+      nextOpener: "",
+      watchWho: "",
+      watchText: "",
+    });
   });
 
   it("starts blank when there has never been a session", () => {
     expect(
       deriveInitialFormValues({ loggedToday: false, latestSession: null }),
-    ).toEqual({ covered: "", stuck: "", nextOpener: "" });
+    ).toEqual({ covered: "", stuck: "", nextOpener: "", watchWho: "", watchText: "" });
   });
 });
 
 describe("fieldsFromExistingSession", () => {
-  it("maps an existing session's fields through unchanged", () => {
-    const existing = { covered: "a", stuck: "b", nextOpener: "c" };
+  it("maps an existing session's fields through unchanged, including its attached watch-for note", () => {
+    const existing = {
+      covered: "a",
+      stuck: "b",
+      nextOpener: "c",
+      watchWho: "Mei",
+      watchText: "keeps dropping third-person -s",
+    };
     expect(fieldsFromExistingSession(existing)).toEqual(existing);
   });
 
-  it("blanks all fields when switching to a date with no session (does not carry over the previous date's text)", () => {
+  it("blanks all fields, including the watch-for note, when switching to a date with no session (does not carry over the previous date's text)", () => {
     expect(fieldsFromExistingSession(null)).toEqual({
       covered: "",
       stuck: "",
       nextOpener: "",
+      watchWho: "",
+      watchText: "",
     });
   });
 });

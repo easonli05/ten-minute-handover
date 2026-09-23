@@ -40,8 +40,20 @@ export function LogSheet({
   const [covered, setCovered] = useState(initialFields.covered);
   const [stuck, setStuck] = useState(initialFields.stuck);
   const [nextOpener, setNextOpener] = useState(initialFields.nextOpener);
-  const [watchWho, setWatchWho] = useState("");
+  const [watchWho, setWatchWho] = useState(initialFields.watchWho);
+  const [watchText, setWatchText] = useState(initialFields.watchText);
   const [isLoadingDate, startDateTransition] = useTransition();
+  // Set when a date-lookup fails (network drop, not a server error) partway
+  // through switching dates. The date field has already moved to `newDate`
+  // by then, but the text boxes still hold whatever was on screen before —
+  // which could be a different date's real lesson entirely. Without this,
+  // hitting Save would silently write that leftover text under `newDate`,
+  // overwriting whatever was actually logged there. So instead: leave the
+  // text alone (nothing typed is lost), but refuse to save until either the
+  // lookup is retried successfully or the date is changed again — "don't
+  // lose what was typed" and "don't save it under the wrong date" both hold
+  // at once this way. See docs/decisions.md.
+  const [dateLookupError, setDateLookupError] = useState<string | null>(null);
   const stuckRef = useRef<HTMLTextAreaElement>(null);
   // Ignore a date-lookup response if a newer one has since been requested.
   const requestIdRef = useRef(0);
@@ -52,13 +64,21 @@ export function LogSheet({
 
   function handleDateChange(newDate: string) {
     setDate(newDate);
+    setDateLookupError(null);
 
     // The date the drawer opened with already has its data in hand — no
     // round trip needed, and it avoids a flash-to-blank while it resolves.
+    // The attached watch-for note isn't part of that in-hand data (see
+    // getSessionForDateAction), so it resets to blank here same as on
+    // first mount — an accepted gap, not silent data loss, since a blank
+    // watchText on save leaves any already-attached note untouched rather
+    // than overwriting it.
     if (newDate === todayISO() && loggedToday && latestSession) {
       setCovered(latestSession.covered ?? "");
       setStuck(latestSession.stuck ?? "");
       setNextOpener(latestSession.nextOpener ?? "");
+      setWatchWho("");
+      setWatchText("");
       return;
     }
 
@@ -71,11 +91,14 @@ export function LogSheet({
         setCovered(fields.covered);
         setStuck(fields.stuck);
         setNextOpener(fields.nextOpener);
+        setWatchWho(fields.watchWho);
+        setWatchText(fields.watchText);
       } catch (err) {
-        // A failed lookup just means the fields don't auto-fill for this
-        // date — nothing typed is at risk, so this fails quietly rather
-        // than surfacing a second error banner on top of the save one.
+        if (requestIdRef.current !== requestId) return; // a newer change already won
         console.error(err);
+        setDateLookupError(
+          "Couldn't check what's already logged for this date — the text below may belong to a different date. Retry before saving.",
+        );
       }
     });
   }
@@ -95,6 +118,10 @@ export function LogSheet({
   // into the same on-screen message a server-side failure gets.
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Belt-and-braces alongside the disabled Save button below: never save
+    // while it's unknown whether the text on screen actually belongs to
+    // the selected date.
+    if (dateLookupError) return;
     const formData = new FormData(event.currentTarget);
     startSubmit(async () => {
       try {
@@ -254,10 +281,25 @@ export function LogSheet({
               <textarea
                 name="watchText"
                 rows={2}
+                value={watchText}
+                onChange={(e) => setWatchText(e.target.value)}
                 placeholder="What to watch for"
                 className="w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm"
               />
             </fieldset>
+
+            {dateLookupError ? (
+              <p role="alert" className="text-sm text-danger">
+                {dateLookupError}{" "}
+                <button
+                  type="button"
+                  onClick={() => handleDateChange(date)}
+                  className="font-medium underline"
+                >
+                  Retry
+                </button>
+              </p>
+            ) : null}
 
             {state.error ? (
               <p role="alert" className="text-sm text-danger">
@@ -269,7 +311,7 @@ export function LogSheet({
           <div className="sticky bottom-0 border-t border-surface-border bg-surface p-4">
             <button
               type="submit"
-              disabled={pending}
+              disabled={pending || isLoadingDate || !!dateLookupError}
               className="w-full rounded-full bg-accent px-4 py-3 text-sm font-semibold text-accent-foreground disabled:opacity-60"
             >
               {pending ? "Saving…" : "Save"}

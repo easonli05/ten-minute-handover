@@ -241,6 +241,24 @@ corrective pass), and nextOpener-shows-latest / unit-advance as pure-logic
 tests in `src/lib/today-class.test.ts` plus DB-ordering confirmation in
 `src/db/session-upsert.test.ts`.
 
+**Second corrective pass** (2026-09-23, Claude/Codex repair loop — see
+GitHub issue #1). "Write-failure handling" above covered a write reaching
+the server and failing cleanly; it didn't cover a multi-statement write
+(log a session + finish a unit + save its note; rewrite a syllabus; import
+a backup) failing *partway through*, which used to leave committed partial
+state — a finished unit with no saved note, a deleted completed unit with
+no replacement, wiped data from a failed reimport — while reporting plain
+failure. All three now write atomically (`runAtomically`, `src/db/atomic.ts`
+— see `docs/decisions.md`). Also fixed in this pass: the log sheet's
+optional attached note could duplicate on any resubmission of an
+already-logged day, not just a retry (`notes.sessionId`, upsert semantics);
+a failed date-lookup while switching the log sheet's date could silently
+save the wrong date's text over real data (Save now blocks until the
+lookup succeeds); the service worker treated Next's client-side RSC
+navigation fetches as safe to cache, same as a static asset, so a
+soft-navigated page could show stale class data even though a full reload
+was always correct.
+
 ---
 
 ## Phase two, once you have used it for a month

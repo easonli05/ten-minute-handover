@@ -660,3 +660,254 @@ steps.
 `wrangler.jsonc` (new), `open-next.config.ts` (new), `.gitignore`
 (`.open-next`/`.wrangler`), `README.md`'s Deploy section,
 `docs/build-brief.md`'s deploy-target line.
+
+## 2026-09-23 — Claude Code — Correction: neon-http *can* write atomically, via db.batch()
+
+**Decided:** Correcting the 2026-09-22 "Section 4: multi-step writes stay
+un-transacted" entry above. That entry's actual claim — `db.transaction()`
+doesn't work on `drizzle-orm/neon-http` — is still true (it throws "No
+transactions support in neon-http driver" at runtime; confirmed again by
+reading `node_modules/drizzle-orm/neon-http/session.js`). But the
+conclusion drawn from it — that multi-statement writes on this driver stay
+sequential and un-atomic — was wrong, and the reasoning ("the actual risk a
+transaction would guard against — two different requests interleaving
+mid-write — doesn't arise in practice for a single-user app") answered the
+wrong question. It's true no two *requests* interleave here. It was never
+about that: a *single* request's own multi-statement write can itself fail
+partway through, and every one of these three multi-statement actions
+(`logSessionAction`, `updateSyllabusAction`, `/api/import`) already ran
+several dependent writes as separate sequential statements with no
+transaction wrapping them. Codex's pressure test on `e550072` reproduced
+exactly that: a lesson save that finished a unit and updated the session
+but silently dropped the attached note when the write failed partway
+through; a syllabus rewrite that deleted a completed unit and then failed
+before inserting its replacement; a malformed import that deleted all
+existing data and then failed before finishing the reinsert.
+
+`drizzle-orm/neon-http` does support `db.batch([...queries])` — it sends an
+array of not-yet-executed queries to Neon as one HTTP request, which Neon's
+own driver runs as a single all-or-nothing Postgres transaction
+(`client.transaction(builtQueries, ...)` inside neon-http's own `batch()`
+implementation). That's the atomicity primitive that was missing, and it
+was available the whole time — the earlier entry just didn't go looking for
+it once `db.transaction()` turned out not to work.
+
+Added `src/db/atomic.ts`'s `runAtomically(db, build)`, which uses
+`db.batch()` when available (neon-http, production) and falls back to a
+real `db.transaction()` when it isn't (node-postgres, tests and the seed
+script — this driver has the opposite gap: no `batch()`, but does support
+real interactive transactions). `build(handle)` returns an array of
+queries built against whichever handle it's given, unexecuted — Drizzle
+query builders only run when awaited or batched, which is what lets the
+same calling code work atomically under both drivers, tests included. All
+three actions above now go through it.
+
+One sharp edge discovered writing the regression test for this
+(`src/db/atomic.test.ts`): batched queries are all *built* before any of
+them execute, so one statement's result can't feed into another within the
+same batch (unlike a sequential `await`, or a real interactive
+transaction). `logSessionAction` needed the session's row id before it
+could build the batch (to link its attached note — see the next entry) —
+solved with one plain `select` before the batch, resolving to the existing
+row's id or minting a new one, which is exactly what the upsert will end
+up using either way. This is also why the (now corrected) reasoning above
+mattered: this constraint is real and worth knowing about, it just doesn't
+mean "give up on atomicity," it means "resolve anything you need to
+reference across statements before building the batch."
+
+**Why this matters beyond these three fixes:** the original entry's error
+was trusting a plausible-sounding but unverified claim about what the
+driver *couldn't* do, instead of checking the driver's own source. Any
+future agent reaching for "should this be atomic" should check
+`node_modules/drizzle-orm/neon-http/session.js` directly rather than
+trusting this file's account of it — including this one.
+**Affects:** `src/db/atomic.ts` (new), `src/db/atomic.test.ts` (new),
+`src/app/actions.ts` (`logSessionAction`, `updateSyllabusAction`),
+`src/app/api/import/route.ts`.
+
+## 2026-09-23 — Claude Code — notes.sessionId: the log sheet's attached note now upserts instead of always inserting
+
+**Decided:** Added a nullable `sessionId` column to `notes` (FK to
+`sessions.id`, cascade delete) with a *partial* unique index
+(`notes_session_id_unique`, `where session_id is not null`) enforcing at
+most one attached note per session. `logSessionAction`'s optional "watch
+for next time" note now upserts against that index
+(`onConflictDoUpdate({ target: notes.sessionId, targetWhere: ... })`)
+instead of always inserting a new row. A "Catch a note" entry (the
+separate bottom-bar capture path, `addNoteAction`) is unaffected —
+`sessionId` stays null there, and freestanding notes keep accumulating
+exactly as before; nothing about their own done/not-done lifecycle changed.
+
+Also extended `getSessionForDateAction` to look up and return the attached
+note's `who`/`text` (new `ExistingSessionFields.watchWho`/`watchText`), and
+wired `LogSheet.tsx`'s watch-for fields to be controlled state prefilled
+the same way `covered`/`stuck`/`nextOpener` already were, instead of an
+always-blank uncontrolled textarea.
+
+**Why:** Codex's finding was "retrying the same lesson duplicated its
+attached watch-for note," but the actual root cause is broader than
+retries: the note had no relationship to the session at all, so *any*
+resubmission of an already-logged day that included watch-for text created
+a second note, retry or not — reopening today's already-logged class,
+adding more detail to the watch-for field, and saving again would have
+silently done this on a completely successful first save too. Giving the
+note a real identity tied to its session (rather than trying to detect
+"is this a retry" some other way) fixes both at once, and is the same
+upsert idiom the session row itself already uses (`onConflictDoUpdate` on
+`(classId, date)`) — applied one level down, to the one piece of that save
+that didn't have it yet. Deliberately does **not** delete an already-
+attached note when watchText is resubmitted blank — notes have their own
+lifecycle (ticked off via the checklist, not through this field; see the
+2026-09-21 "Separate mid-class capture path" entry), and this field was
+never meant to be that control. Prefilling `watchWho`/`watchText` on
+reopen (previously they never prefilled at all, even before this fix) is
+what makes the upsert semantics legible rather than surprising — without
+it, resaving a day would either duplicate the note (the bug) or silently
+leave an existing one untouched with no way to tell it was already there.
+
+**Known, accepted gap:** the *fast path* in `handleDateChange` (returning
+to today when it's already logged) still doesn't prefill the watch-for
+fields — the Today-screen query it reuses doesn't carry the attached note,
+only `getSessionForDateAction`'s round trip does, and that fast path exists
+specifically to avoid a round trip. Returning to today with the fields
+blank and saving leaves an already-attached note untouched (blank
+`watchText` never deletes), so this is a UI completeness gap, not a data
+risk. Worth fixing if it turns out to matter in practice.
+
+**Verified live** (temporary `drizzle-orm/node-postgres` swap of
+`src/db/index.ts` against the local test Postgres, reverted before commit,
+same technique as every earlier verification pass — see the 2026-09-22
+"How section 2 was verified" entry): via a real running dev server and a
+transient Playwright session (`npm install --no-save playwright`,
+uninstalled after, never touched `package.json`) — saved a class with a
+watch-for note, confirmed one note row with the right `sessionId`;
+reopened the log sheet, changed the date away and back to trigger the real
+`getSessionForDateAction` round trip, confirmed `watchWho`/`watchText`
+prefilled correctly from the database; resubmitted unchanged (simulating a
+retry) and confirmed still exactly one note; edited the text and resaved,
+confirmed the same note updated in place rather than a second one
+appearing. `src/db/atomic.test.ts` covers the same upsert shape against the
+node-postgres test driver as a fast, DB-gated regression test.
+**Not verified:** the real neon-http `db.batch()` path against an actual
+Neon endpoint — no Neon account in this environment, same limitation as
+every deploy-related entry above. Asked Codex to independently re-run
+their original pressure-test reproduction against this fix.
+**Affects:** `src/db/schema.ts` (migration `0002`), `src/app/actions.ts`
+(`getSessionForDateAction`, `logSessionAction`), `src/lib/log-sheet-form.ts`,
+`src/lib/log-sheet-form.test.ts`, `src/components/LogSheet.tsx`,
+`src/lib/export-format.ts` (`ExportedNote.sessionId`).
+
+## 2026-09-23 — Claude Code — LogSheet: a failed date lookup now blocks Save instead of silently risking the wrong date
+
+**Decided:** `LogSheet.tsx`'s date-change handler used to catch a failed
+`getSessionForDateAction` lookup with only `console.error` — the date field
+had already moved to the new date, but the text fields kept whatever was
+on screen before, with nothing telling the teacher those two things might
+now belong to different dates. Hitting Save in that state silently wrote
+the leftover text under the new date, which is exactly what Codex's
+finding reproduced: "a failed date lookup silently retained today's form
+values under an older date; saving then overwrote the older lesson."
+Fixed with a new `dateLookupError` state: on failure, the text is left
+alone (still "nothing typed is at risk," which is what the original
+comment here was actually trying to protect), but Save is disabled and an
+inline error with a Retry button appears; `handleSubmit` also bails out
+directly on `dateLookupError` as defense in depth alongside the disabled
+button.
+
+**Why:** The original code's comment reasoned about the wrong risk —
+"nothing typed is at risk" is true and was never the problem; the problem
+is *where* it gets saved. Blocking Save until the lookup either succeeds or
+the date is changed again is the smallest fix that makes both properties
+hold at once: nothing typed is lost, and nothing gets written under a date
+whose actual contents are still unknown.
+**Verified live**, same session as the entry above: intercepted the
+date-lookup's network request with Playwright and forced it to fail,
+confirmed Save became disabled and the Retry affordance appeared, then
+un-intercepted and clicked Retry, confirmed Save re-enabled — and confirmed
+via `/api/export` that nothing was ever saved under the date that had
+failed its lookup.
+**Affects:** `src/components/LogSheet.tsx`.
+
+## 2026-09-23 — Claude Code — Service worker: Next's client-side RSC fetches are now network-only too
+
+**Decided:** `sw.js`'s fetch handler treated any request that wasn't a
+full-page navigation (`request.mode === "navigate"`) or under `/api/` as
+safe to cache-first, on the assumption those were the only two shapes a
+data-bearing request could take. Next.js App Router client-side navigation
+and prefetching don't do a full navigation, though — they fetch the target
+page as an RSC payload, carrying the same class data a full reload would,
+with `request.mode` of `"cors"`/`"same-origin"`, never `"navigate"`. That
+fetch fell through to the generic cache-first branch and got treated like
+a static asset — Codex's finding: "the service worker returned stale data
+for a simulated Next.js client-navigation/RSC request, despite full-page
+navigation bypassing the cache." Fixed by (1) explicitly detecting these
+requests via the headers Next always sets on them (`rsc`,
+`next-router-state-tree`, `next-router-prefetch`, `next-url` — confirmed
+against `node_modules/next/dist/client/components/app-router-headers.js`
+for this exact Next 16.3.5 install rather than assumed from memory) and
+passing them straight to the network, and (2) flipping the fallback
+handler from a denylist to an allowlist: only `/_next/static/*` and the
+explicit shell files (`SHELL_URLS`) are cache-first now; anything
+unrecognized falls through to the network uncached rather than being
+assumed safe. Bumped `SHELL_CACHE` to `tmh-shell-v3` (per this file's
+existing convention) to purge anything cached under the old, wrong
+assumption.
+**Why the allowlist flip, not just the header check:** the header check
+fixes the specific reported case; the denylist-to-allowlist flip is a
+defense-in-depth answer to the underlying premise the original code got
+wrong — assuming an unrecognized request shape is safe to cache is exactly
+the assumption that made the RSC case fall through unnoticed. A future
+request shape this file hasn't accounted for now fails safe (uncached,
+correct-but-slower) instead of failing unsafe (cached, possibly stale).
+**Verified live**, same session as the entries above: registered the real
+service worker in a Playwright-driven browser, cleared its cache, issued a
+`fetch("/", { headers: { RSC: "1" } })` from page context (the same header
+Next's own router fetch carries), changed real class data through the app
+between two such fetches, and confirmed the second one reflected the
+change rather than returning identical (cached) bytes; confirmed the cache
+never gained an entry for that URL; confirmed a real `/_next/static/`
+script still does get cached, so the allowlist flip didn't break the
+caching this file exists for.
+**Affects:** `public/sw.js`.
+
+## 2026-09-23 — Claude Code — Import validation: referential integrity and type checks added
+
+**Decided:** `validateExportPayload` was deliberately shallow (checks
+shape + required-field presence, not full types or cross-references) —
+reasonable on its own, but combined with the import route's writes not
+being atomic (fixed above, same pass), it meant a payload with the right
+shape but a dangling reference (a unit/session/note's `classId` pointing at
+no class in the payload, or two notes sharing a `sessionId`) sailed past
+validation, got most of the way through the delete-then-reinsert sequence,
+and then failed at the database's own constraints *after* existing data
+was already gone — Codex's finding: "a malformed import passed validation,
+deleted existing data, then failed." Added: type checks for `days`/
+`students` (string arrays), `archived`/`done` (booleans), `position`
+(number); duplicate-id detection within each table; and referential checks
+that every `classId` (all four tables) and `sessionId` (notes) actually
+resolves to a row present in the *same payload*, plus that at most one
+note claims a given non-null `sessionId`.
+
+**Why this is additional to, not instead of, the atomicity fix:** the
+import route's writes are now atomic regardless (see the correction entry
+above) — a payload that gets past this and still fails a real constraint
+no longer loses anything, it just gets a rollback and a 500. This
+validation exists so the *common* malformed-import case gets a clear,
+specific 400 before ever touching the database, rather than relying on the
+safety net for something preventable. Still deliberately not a full schema
+validator (no date-format validation, for instance) — same reasoning as
+the original entry: the database's own constraints catch what's left,
+now safely.
+**Verified live**, same session as the entries above: against the real
+running `/api/import` route and the local test Postgres, sent an import
+with two sessions sharing the same `(classId, date)` — passes this
+validation (nothing here replicates the sessions table's own unique
+constraint, which felt like exactly the kind of DB-specific detail this
+file's "not a full schema validator" philosophy says to leave to the
+database) — confirmed it failed with the new rolled-back-cleanly error
+message, and confirmed via `/api/export` immediately after that all
+pre-existing data (3 classes, 7 units, 5 sessions, 2 notes) was completely
+unchanged. Also confirmed a plain export-then-reimport of that same data
+round-trips successfully (the strengthened validation doesn't reject
+well-formed real exports).
+**Affects:** `src/lib/export-format.ts`, `src/lib/export-format.test.ts`.

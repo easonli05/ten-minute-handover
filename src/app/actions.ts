@@ -1,8 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
+import { runAtomically } from "@/db/atomic";
 import { classes, notes, sessions, units } from "@/db/schema";
 import { assertAuthenticated } from "@/lib/auth-server";
 import { diffSyllabus, parseSyllabusText } from "@/lib/syllabus";
@@ -21,11 +22,19 @@ export type ExistingSessionFields = {
   covered: string;
   stuck: string;
   nextOpener: string;
+  watchWho: string;
+  watchText: string;
 } | null;
 
 // Lets the log sheet load whatever is already on file for a given class+date
 // — called on open (for today) and whenever the date field changes — so
 // re-saving never silently blanks fields the teacher didn't mean to touch.
+// Also looks up the session's attached "watch for next time" note (if any),
+// so reopening an already-logged day shows that note too, not just the
+// three main fields — before this, resubmitting a day that already had a
+// watch-for note attached had no way to show what was already there, which
+// is how re-submitting the same text ended up creating a duplicate instead
+// of updating it (see logSessionAction and docs/decisions.md).
 export async function getSessionForDateAction(
   classId: string,
   date: string,
@@ -41,10 +50,19 @@ export async function getSessionForDateAction(
   const row = rows[0];
   if (!row) return null;
 
+  const noteRows = await db
+    .select({ who: notes.who, text: notes.text })
+    .from(notes)
+    .where(eq(notes.sessionId, row.id))
+    .limit(1);
+  const note = noteRows[0];
+
   return {
     covered: row.covered ?? "",
     stuck: row.stuck ?? "",
     nextOpener: row.nextOpener ?? "",
+    watchWho: note?.who ?? "",
+    watchText: note?.text ?? "",
   };
 }
 
@@ -80,35 +98,85 @@ export async function logSessionAction(
   }
 
   try {
-    await db
-      .insert(sessions)
-      .values({
-        classId,
-        date,
-        covered: covered || null,
-        stuck: stuck || null,
-        nextOpener: nextOpener || null,
-      })
-      .onConflictDoUpdate({
-        target: [sessions.classId, sessions.date],
-        set: {
-          covered: covered || null,
-          stuck: stuck || null,
-          nextOpener: nextOpener || null,
-        },
-      });
+    // The session's id has to be known *before* building the atomic batch
+    // below (batched queries can't feed one statement's result into
+    // another — see src/db/atomic.ts), so it's resolved with a plain read
+    // first: reuse the existing row's id if this class+date is already
+    // logged, or mint a new one if not. Either way this is the same id the
+    // upsert below will end up with, so the attached note (if any) can
+    // target it directly in the same atomic write.
+    const existing = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(and(eq(sessions.classId, classId), eq(sessions.date, date)))
+      .limit(1);
+    const sessionId = existing[0]?.id ?? crypto.randomUUID();
 
-    if (typeof finishUnitId === "string" && finishUnitId) {
-      await db.update(units).set({ done: true }).where(eq(units.id, finishUnitId));
-    }
+    await runAtomically(db, (h) => {
+      const queries: unknown[] = [
+        h
+          .insert(sessions)
+          .values({
+            id: sessionId,
+            classId,
+            date,
+            covered: covered || null,
+            stuck: stuck || null,
+            nextOpener: nextOpener || null,
+          })
+          .onConflictDoUpdate({
+            target: [sessions.classId, sessions.date],
+            set: {
+              covered: covered || null,
+              stuck: stuck || null,
+              nextOpener: nextOpener || null,
+            },
+          }),
+      ];
 
-    if (watchText) {
-      await db.insert(notes).values({
-        classId,
-        who: watchWho || null,
-        text: watchText,
-      });
-    }
+      if (typeof finishUnitId === "string" && finishUnitId) {
+        queries.push(
+          h.update(units).set({ done: true }).where(eq(units.id, finishUnitId)),
+        );
+      }
+
+      // onConflictDoUpdate targets the partial unique index on
+      // notes.sessionId (see src/db/schema.ts): resubmitting the same
+      // session's watch-for text updates the one note already attached to
+      // it instead of inserting a duplicate — this is what fixes both "a
+      // failed save silently duplicates the note on retry" and "reopening
+      // an already-logged day and resaving duplicates it" (same root
+      // cause, no failure required). Leaving watchText blank on a resave
+      // deliberately does *not* delete an already-attached note — notes
+      // have their own done/not-done lifecycle (see docs/decisions.md,
+      // 2026-09-21), and this field isn't its undo control.
+      if (watchText) {
+        queries.push(
+          h
+            .insert(notes)
+            .values({
+              classId,
+              sessionId,
+              who: watchWho || null,
+              text: watchText,
+            })
+            .onConflictDoUpdate({
+              target: notes.sessionId,
+              // notes_session_id_unique (src/db/schema.ts) is a *partial*
+              // unique index (`where session_id is not null`) — Postgres
+              // only matches an ON CONFLICT target against an index whose
+              // predicate is restated here exactly; without targetWhere it
+              // fails at query time with "no unique or exclusion
+              // constraint matching the ON CONFLICT specification" (caught
+              // by src/db/atomic.test.ts before this ever ran for real).
+              targetWhere: sql`${notes.sessionId} is not null`,
+              set: { who: watchWho || null, text: watchText },
+            }),
+        );
+      }
+
+      return queries;
+    });
   } catch (err) {
     return { error: toSaveError(err), success: false };
   }
@@ -184,28 +252,39 @@ export async function updateSyllabusAction(
 
     const { toDelete, toUpdate, toInsert } = diffSyllabus(existing, titles);
 
-    // Sequential, not a transaction — the neon-http driver's transaction
-    // support doesn't fit a single-user app well enough to be worth the
-    // complexity; see docs/decisions.md.
-    for (const id of toDelete) {
-      await db.delete(units).where(eq(units.id, id));
-    }
-    for (const u of toUpdate) {
-      await db
-        .update(units)
-        .set({ title: u.title, position: u.position })
-        .where(eq(units.id, u.id));
-    }
-    if (toInsert.length > 0) {
-      await db.insert(units).values(
-        toInsert.map((u) => ({
-          classId,
-          title: u.title,
-          position: u.position,
-          done: false,
-        })),
-      );
-    }
+    // Atomic (see src/db/atomic.ts): previously these ran as separate
+    // sequential statements, so a failure partway through — say, the
+    // delete of a reworded unit succeeding but the matching insert of its
+    // replacement then failing — permanently lost that unit's progress
+    // even though the save reported failure. Batching them means the
+    // delete/update/insert either all land or none do.
+    await runAtomically(db, (h) => {
+      const queries: unknown[] = [];
+      for (const id of toDelete) {
+        queries.push(h.delete(units).where(eq(units.id, id)));
+      }
+      for (const u of toUpdate) {
+        queries.push(
+          h
+            .update(units)
+            .set({ title: u.title, position: u.position })
+            .where(eq(units.id, u.id)),
+        );
+      }
+      if (toInsert.length > 0) {
+        queries.push(
+          h.insert(units).values(
+            toInsert.map((u) => ({
+              classId,
+              title: u.title,
+              position: u.position,
+              done: false,
+            })),
+          ),
+        );
+      }
+      return queries;
+    });
   } catch (err) {
     return { error: toSaveError(err), success: false };
   }
